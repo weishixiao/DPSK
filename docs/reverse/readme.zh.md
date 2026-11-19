@@ -63,7 +63,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 | `packages/reverse/tool-macho/` | `reverse_macho_analyze` |
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
-| `packages/reverse/tool-tweak/` | `reverse_hook_install`、`reverse_inject_dylib`（生成并保存 Substrate 源码） |
+| `packages/reverse/tool-tweak/` | `reverse_hook_install`、`reverse_inject_dylib`（前置一次审批；安装行为本身返回 `unsupported`） |
 | `packages/bundle/reverse/` | 可选 bundle，`cordis.patch.yml` 只 insert 自己的行 |
 | `packages/llm/llm-failover/` | 多模型路由：某个 provider 报余额/凭据失败时，下一步切到配置里的下一个 provider |
 
@@ -185,7 +185,7 @@ dsh:
 5. `reverse_macho_analyze {path:"/var/containers/.../App.app/App"}` —— 判断是否加壳、依赖什么、有无 ObjC 名称表。
 6. `reverse_memory_scan {pid, type:"u64", value:"0"}` —— 找数值（金币、剩余次数）。
 7. `reverse_memory_write {pid, address:"0x...", type:"u64", value:"999999"}` —— 每次写都要在打开的 turn 内点一次"允许一次"。
-8. `reverse_hook_install` —— 生成 Substrate 源码并保存为脚本（见下方边界）。
+8. `reverse_hook_install` —— 把你写好的 hook 源码经审批交给常驻端；本版本常驻端返回 `unsupported`，因此留下来的就是源码本身（见下方边界）。
 
 <a id="安全边界"></a>
 ## 安全边界
@@ -201,7 +201,7 @@ dsh:
 
 | 项 | 现状 |
 |---|---|
-| `hook.install` | 常驻端返回 `unsupported`。跨进程 inline hook 需要目标进程内的 hook 引擎，本版本没有内置；`reverse_hook_install` 仍然生成并保存 Substrate 源码，走 Theos 编译成 tweak 的正规路径 |
+| `hook.install` | 常驻端返回 `unsupported`。跨进程 inline hook 需要目标进程内的 hook 引擎，本版本没有内置；`reverse_hook_install` 仍会把你写的源码送去审批，所以会话里的源码就是 Theos 编译 tweak 的起点 |
 | `inject.dylib` | 同上，返回 `unsupported`。用越狱自带的 dylib 注入器或 tweak 过滤器加载 |
 | 远程 Theos 编译 | `system.hello` 的 `theos` 字段只报告设备上是否可见 Theos；resident 尚未驱动编译 |
 | `objc-method` 符号 | 仅从文件符号表与名称表推断，尚未从目标运行时读取 class/method 列表 |

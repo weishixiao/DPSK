@@ -63,7 +63,7 @@ The seam has the usual three roles: `ReverseBridge` (Service Definition, `packag
 | `packages/reverse/tool-macho/` | `reverse_macho_analyze` |
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
-| `packages/reverse/tool-tweak/` | `reverse_hook_install`, `reverse_inject_dylib` (generate and save Substrate source) |
+| `packages/reverse/tool-tweak/` | `reverse_hook_install`, `reverse_inject_dylib` (behind one approval; the installation itself answers `unsupported`) |
 | `packages/bundle/reverse/` | Optional bundle whose `cordis.patch.yml` only inserts its own rows |
 | `packages/llm/llm-failover/` | Multi-model routing: when a provider answers with a quota or credential failure, the next step selects the next configured provider |
 
@@ -183,7 +183,7 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 5. `reverse_macho_analyze {path:"/var/containers/.../App.app/App"}` — encrypted, dependencies, Objective-C name tables.
 6. `reverse_memory_scan {pid, type:"u64", value:"0"}` — find a value (coins, remaining attempts).
 7. `reverse_memory_write {pid, address:"0x...", type:"u64", value:"999999"}` — each write needs one "allow once" inside the open turn.
-8. `reverse_hook_install` — generates and saves Substrate source (see the boundary below).
+8. `reverse_hook_install` — takes the hook source you wrote and puts it through approval; this build's resident answers `unsupported`, so what you keep is the source itself (see the boundary below).
 
 <a id="security-boundary"></a>
 ## Security boundary
@@ -199,7 +199,7 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 
 | Item | State |
 |---|---|
-| `hook.install` | Answers `unsupported`. Cross-process inline hooking needs a hook engine inside the target, which this build does not carry; `reverse_hook_install` still generates and saves Substrate source, which is the supported path via a Theos-built tweak |
+| `hook.install` | Answers `unsupported`. Cross-process inline hooking needs a hook engine inside the target, which this build does not carry; `reverse_hook_install` still takes the source you wrote and puts it through approval, so the source in the transcript is the starting point for a Theos-built tweak |
 | `inject.dylib` | Same, `unsupported`. Load the dylib with the jailbreak's own injector or a tweak filter |
 | Remote Theos builds | `system.hello`'s `theos` field only reports whether Theos is visible on device; the resident does not drive a build yet |
 | `objc-method` symbols | Inferred from the file's symbol and name tables only; the target runtime's class/method lists are not read yet |
