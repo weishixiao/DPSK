@@ -1,0 +1,36 @@
+# The dsh-reverse-bundle patch: the reverse-engineering capability as one layer
+# over a base-backed profile. It only INSERTS rows of its own and rewrites none of
+# the base's, so a profile keeps the stock chat, agent loop, tools, persistence and
+# approval behaviour whether or not this bundle is selected.
+#
+# Capability switch: list this bundle in the profile's `dsh.profile.bundles`, or
+# leave it out — that is the capability's on and off. The bridge's own `enabled`
+# flag is for an operator who wants the rows mounted while every call is refused;
+# it is deliberately not a per-tool switch, because tools without the bridge that
+# serves them would answer every call with a configuration error.
+#
+# The resident side is a jailbreak tweak, not a package of this repository: the
+# bridge only dials the socket the tweak listens on, so a device without the tweak
+# reports `offline` and the tools say so rather than failing the composition.
+
+- insert:
+    - id: reverse-bridge
+      name: '@deepseek-ai/dsh-reverse-bridge'
+      config:
+        enabled: true
+        socketPath: /var/mobile/Library/DSHReverse/rvd.sock
+
+    - id: tool-reverse-process
+      name: '@deepseek-ai/dsh-tool-reverse-process'
+
+    - id: tool-reverse-macho
+      name: '@deepseek-ai/dsh-tool-reverse-macho'
+
+    - id: tool-reverse-symbol
+      name: '@deepseek-ai/dsh-tool-reverse-symbol'
+
+    - id: tool-reverse-memory
+      name: '@deepseek-ai/dsh-tool-reverse-memory'
+
+    - id: tool-reverse-tweak
+      name: '@deepseek-ai/dsh-tool-reverse-tweak'

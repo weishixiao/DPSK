@@ -1,0 +1,9 @@
+Package: com.dsh.reverse-resident
+Name: DSH Reverse Resident
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: The device half of the DeepSeek Harness reverse-engineering capability. A SpringBoard tweak that listens on /var/mobile/Library/DSHReverse/rvd.sock and serves process, image, symbol, Mach-O, and memory operations to the harness over NDJSON frames.
+Maintainer: local
+Author: local
+Section: Tweaks
+Depends: firmware (>= 15.0), mobilesubstrate
