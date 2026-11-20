@@ -109,14 +109,39 @@ configure_node() {
     "$@"
 }
 
+# A cross-build of Node fails deep inside a make log, and the run page shows
+# annotations only — one line each. The command that produced the first error,
+# and the first errors themselves, are what a reader needs; the tail of the log
+# is a thousand lines of the same mistake. Each goes up as its own annotation.
+report_first_failure() {
+  local log="$1" lineno command_line
+  lineno=$(grep -n -m 1 'error:' "$log" | cut -d: -f1 || true)
+  [ -n "$lineno" ] || return 0
+  say "first failure: make.log line $lineno"
+  # Nothing in an error message says which flags were in play; the compiler
+  # invocation immediately above it does.
+  command_line=$(awk -v stop="$lineno" \
+    'NR < stop && (/\/clang/ || /\/c\+\+/ || /\/g\+\+/) { line = $0 } NR >= stop { print line; exit }' \
+    "$log")
+  printf '%s\n' "${command_line:-(no command line above the first error)}" \
+    | fold -w 170 | head -n 4 \
+    | sed 's/^/::error title=engine command::/'
+  head -n "$((lineno + 15))" "$log" | tail -n 16 \
+    | grep -E 'error:|fatal error:' | head -n 6 | cut -c1-170 \
+    | sed 's/^/::error title=engine error::/' || true
+  return 0
+}
+
 stage_node() {
   say "building Node $node_version for iOS arm64"
   command -v xcrun >/dev/null || fail "xcrun is missing — this step needs Xcode"
 
-  local sdk
+  local sdk macsdk host_cc host_cxx
   sdk=$(xcrun --sdk iphoneos --show-sdk-path) || fail "no iPhoneOS SDK is installed"
-  local host_cc
+  macsdk=$(xcrun --sdk macosx --show-sdk-path) || fail "no macOS SDK is installed"
   host_cc=$(xcrun --sdk macosx --find clang)
+  host_cxx=$(xcrun --sdk macosx --find clang++)
+  say "iPhoneOS SDK $(basename "$sdk"), macOS SDK $(basename "$macsdk")"
 
   mkdir -p "$work_dir"
   # The tarball unpacks to a directory whose name is not simply the version
@@ -140,14 +165,30 @@ stage_node() {
 
   ( cd "$source_dir"
 
-    export CC_target="$sdk/usr/bin/clang"
-    export CXX_target="$sdk/usr/bin/clang++"
+    # Two compilers, named on both sides. gyp's make generator reads
+    # `CC_host`/`CC_target` (and the CXX/LINK twins) when cross-compiling, and
+    # `$sdk/usr/bin/clang` is not a path an iPhoneOS SDK has — the SDK carries
+    # headers and libraries, not tools. Both sides therefore use the macOS
+    # clang, and only the target side names the iPhoneOS sysroot.
+    #
+    # The sysroot travels *inside* the target command as well as in
+    # `CFLAGS_target`: Node builds its host tools (mksnapshot among them) in the
+    # same tree, and a sysroot that reaches them is a `stdio.h not found` — the
+    # host tools are ordinary macOS binaries. `CFLAGS_host` pins that side.
     export CC_host="$host_cc"
-    export CXX_host="$host_cc"
-    export LINK_host="$host_cc"
-    export CFLAGS_target="-isysroot $sdk -miphoneos-version-min=$ios_min -arch arm64"
-    export CXXFLAGS_target="$CFLAGS_target"
-    export LDFLAGS_target="$CFLAGS_target"
+    export CXX_host="$host_cxx"
+    export LINK_host="$host_cxx"
+    export CFLAGS_host="-isysroot $macsdk"
+    export CXXFLAGS_host="-isysroot $macsdk"
+    export LDFLAGS_host="-isysroot $macsdk"
+
+    local ios_flags="-target arm64-apple-ios$ios_min -isysroot $sdk"
+    export CC_target="$host_cc $ios_flags"
+    export CXX_target="$host_cxx $ios_flags"
+    export LINK_target="$host_cxx $ios_flags"
+    export CFLAGS_target="$ios_flags"
+    export CXXFLAGS_target="$ios_flags"
+    export LDFLAGS_target="$ios_flags"
 
     rm -rf out
 
@@ -160,9 +201,11 @@ stage_node() {
     fi
 
     # The snapshot generator is a host tool; everything else is the iOS target.
-    make -j"$jobs" \
-      CC_host="$CC_host" CXX_host="$CXX_host" LINK_host="$LINK_host" \
-      || fail "make failed — the iOS target does not compile as configured"
+    if ! make -j"$jobs" V=1 CC_host="$CC_host" CXX_host="$CXX_host" LINK_host="$LINK_host" \
+        2>&1 | tee "$work_dir/make.log"; then
+      report_first_failure "$work_dir/make.log"
+      fail "make failed — the iOS target does not compile as configured"
+    fi
   )
 
   local dylib
