@@ -42,6 +42,10 @@ apps/cli/docs/
 .artifacts/
 .dsh-build/
 .dsh-report/
+# XcodeGen writes the project and xcodebuild the archive: neither is source.
+app/ios/DPSK.xcodeproj/
+app/ios/Sources/Info.plist
+.dpsk-ios/
 .ui-review/
 .playwright-mcp/
 .orig

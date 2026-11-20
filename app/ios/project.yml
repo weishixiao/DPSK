@@ -1,0 +1,66 @@
+# XcodeGen spec for the DPSK iOS app.
+#
+# Nothing in this file is generated: `tooling/ios/build.sh` runs `xcodegen generate`
+# here and builds the project it writes, so the app is reproducible from source and
+# the repository never carries a .xcodeproj.
+#
+# Bundle id: change `PRODUCT_BUNDLE_IDENTIFIER` below (one place) before the first
+# signed build — a free Apple ID needs an id nothing else on the App Store holds.
+name: DPSK
+
+options:
+  bundleIdPrefix: com.dpsk
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+
+targets:
+  DPSK:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Sources
+      # The packed Node runtime, when `tooling/ios/prepare-engine.sh` has put one
+      # here. It is copied in as a folder so the app finds it by name at run time.
+      - path: Engine
+        type: folder
+        buildPhase: resources
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: DPSK
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIUserInterfaceStyle: Dark
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # A harness host is reached over plain http on a LAN or over a tailnet, and
+        # its WebSocket needs no special case beyond this.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: DPSK 连接局域网内的 harness 主机。
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dpsk.harness
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES

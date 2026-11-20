@@ -1,0 +1,41 @@
+name: ios
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/ios/**'
+      - 'tooling/ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'app/ios/**'
+      - 'tooling/ios/**'
+      - '.github/workflows/ios.yml'
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    name: unsigned ipa
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Build unsigned ipa
+        run: tooling/ios/build.sh iphoneos "$RUNNER_TEMP/ipa"
+      - name: Upload the ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: dpsk-unsigned-ipa
+          path: ${{ runner.temp }}/ipa/DPSK.ipa
+          if-no-files-found: error
+          retention-days: 14
