@@ -39,6 +39,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-reverse-bridge": "workspace:*",
     "@deepseek-ai/dsh-reverse-protocol": "workspace:*",
+    "@deepseek-ai/dsh-reverse-scripts": "workspace:*",
     "@deepseek-ai/dsh-tool-reverse-macho": "workspace:*",
     "@deepseek-ai/dsh-tool-reverse-memory": "workspace:*",
     "@deepseek-ai/dsh-tool-reverse-process": "workspace:*",

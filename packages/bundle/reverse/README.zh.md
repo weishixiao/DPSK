@@ -47,7 +47,7 @@ dsh:
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
-本 bundle 只是 `insert` 行的 patch；它不改写下层任何一行，所以聊天、agent 循环、持久化与审批的行为与没有它时完全一致。行包括桥与 `tool-reverse-process`、`tool-reverse-macho`、`tool-reverse-symbol`、`tool-reverse-memory`、`tool-reverse-tweak`。常驻端不是这里的包：它是 `native/reverse-resident/` 下的 Theos tweak，桥只经它的 Unix 套接字访问。
+本 bundle 只是 `insert` 行的 patch；它不改写下层任何一行，所以聊天、agent 循环、持久化与审批的行为与没有它时完全一致。行包括桥、`tool-reverse-process`、`tool-reverse-macho`、`tool-reverse-symbol`、`tool-reverse-memory`、`tool-reverse-tweak` 与 `reverse-scripts`。其中任何一行都能用 `config: { enabled: false }` 单独关掉。常驻端不是这里的包：它是 `native/reverse-resident/` 下的 Theos tweak，桥只经它的 Unix 套接字访问。
 
 <a id="further-exploration"></a>
 ## 延伸阅读

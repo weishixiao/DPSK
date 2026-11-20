@@ -5,6 +5,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ReverseBridge } from '@deepseek-ai/dsh-reverse-bridge'
 import { DEFAULT_STRING_LIMIT, normalizeArguments } from '@deepseek-ai/dsh-reverse-bridge'
@@ -12,14 +13,30 @@ import { DEFAULT_STRING_LIMIT, normalizeArguments } from '@deepseek-ai/dsh-rever
 export const name = 'tool-reverse-macho'
 export const inject = ['tools', 'reverse']
 
+/** Configuration of this tool package. */
+export interface Config {
+  /**
+   * Register this package's tools. Defaults to true. A profile that does not want
+   * the capability at all sets it false, and the model never sees the tool.
+   */
+  enabled?: boolean
+}
+
+/** Schema for {@link Config}. */
+export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(true),
+})
+
 /** How many rows of each list a rendered summary shows. */
 const RENDER_ROWS = 30
 
 /**
  * Register the Mach-O analysis tool.
  * @param ctx - registrant context with the tool registry and the reverse bridge.
+ * @param config - whether this package registers its tools at all.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
+  if ((config as Required<Config>).enabled === false) return
   const reverse: ReverseBridge = ctx.reverse
 
   ctx.tools.register(defineTool({

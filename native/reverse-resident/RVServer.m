@@ -396,14 +396,18 @@ static void *RVClientLoop(void *raw) {
       start = index + 1;
       NSString *text = [[NSString alloc] initWithData:line encoding:NSUTF8StringEncoding];
       if (text.length == 0) continue;
-      NSData *response = RVAnswerLine(server, text);
-      if (response == nil) continue;
-      NSMutableData *framed = [response mutableCopy];
-      [framed appendBytes:"\n" length:1];
-      if (write(client, framed.bytes, framed.length) < 0) {
-        os_log_error(OS_LOG_DEFAULT, "rv: write failed: %{errno}d", errno);
-        close(client);
-        return NULL;
+      // One pool per request: a scan builds a large result array, and without this
+      // the high-water mark of a long-lived client would be the sum of every answer.
+      @autoreleasepool {
+        NSData *response = RVAnswerLine(server, text);
+        if (response == nil) continue;
+        NSMutableData *framed = [response mutableCopy];
+        [framed appendBytes:"\n" length:1];
+        if (write(client, framed.bytes, framed.length) < 0) {
+          os_log_error(OS_LOG_DEFAULT, "rv: write failed: %{errno}d", errno);
+          close(client);
+          return NULL;
+        }
       }
     }
     if (start > 0) [pending replaceBytesInRange:NSMakeRange(0, start) withBytes:NULL length:0];
@@ -438,7 +442,27 @@ static NSData *RVAnswerLine(RVServer *server, NSString *line) {
   }
 
   RVError *error = nil;
-  id result = handler(args, &error);
+  id result = nil;
+  // SpringBoard is the host process: an exception that escaped here would take the
+  // home screen down with it. The handler is third-party code by construction, so
+  // the boundary is the dispatcher's, and the caller still gets a frame.
+  @try {
+    result = handler(args, &error);
+  } @catch (NSException *caught) {
+    os_log_error(OS_LOG_DEFAULT,
+                 "rv: %{public}s raised %{public}s: %{public}s",
+                 operation.UTF8String,
+                 caught.name.UTF8String ?: "exception",
+                 caught.reason.UTF8String ?: "");
+    return RVFrame(identifier,
+                   nil,
+                   [RVError errorWithCode:RVCodeRemoteError
+                                   message:[NSString stringWithFormat:@"the resident raised %@ while serving %@: %@",
+                                            caught.name ?: @"an exception",
+                                            operation,
+                                            caught.reason ?: @"no reason given"]],
+                   started);
+  }
   if (error != nil || result == nil) {
     RVError *failure = error ?: [RVError errorWithCode:RVCodeRemoteError message:@"operation produced no result"];
     return RVFrame(identifier, nil, failure, started);

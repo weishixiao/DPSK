@@ -47,7 +47,7 @@ Nothing else is needed to start: without the resident tweak the bridge answers `
 <a id="understand-the-implementation"></a>
 ## Understand the implementation
 
-The bundle is a patch of `insert` rows only; it rewrites no row of the layers beneath it, so chat, the agent loop, persistence and approval behave exactly as they do without it. Rows are the bridge and `tool-reverse-process`, `tool-reverse-macho`, `tool-reverse-symbol`, `tool-reverse-memory`, `tool-reverse-tweak`. The resident is not a package here: it is the Theos tweak under `native/reverse-resident/`, which the bridge reaches only over its Unix socket.
+The bundle is a patch of `insert` rows only; it rewrites no row of the layers beneath it, so chat, the agent loop, persistence and approval behave exactly as they do without it. Rows are the bridge, `tool-reverse-process`, `tool-reverse-macho`, `tool-reverse-symbol`, `tool-reverse-memory`, `tool-reverse-tweak` and `reverse-scripts`. Any one of them can be turned off on its own with `config: { enabled: false }`. The resident is not a package here: it is the Theos tweak under `native/reverse-resident/`, which the bridge reaches only over its Unix socket.
 
 <a id="further-exploration"></a>
 ## Further Exploration

@@ -556,6 +556,7 @@
       "@deepseek-ai/dsh-reverse-bridge": ["./packages/reverse/bridge/src"],
       "@deepseek-ai/dsh-reverse-bundle": ["./packages/bundle/reverse/src"],
       "@deepseek-ai/dsh-reverse-protocol": ["./packages/reverse/protocol/src"],
+      "@deepseek-ai/dsh-reverse-scripts": ["./packages/reverse/scripts/src"],
       "@deepseek-ai/dsh-sandbox": ["./packages/sandbox/sandbox/src"],
       "@deepseek-ai/dsh-sandbox-local": ["./packages/sandbox/sandbox-local/src"],
       "@deepseek-ai/dsh-sandbox-policy": ["./packages/sandbox/sandbox-policy/src"],

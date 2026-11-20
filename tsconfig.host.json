@@ -507,6 +507,7 @@
     { "path": "./packages/reverse/tool-symbol" },
     { "path": "./packages/reverse/tool-memory" },
     { "path": "./packages/reverse/tool-tweak" },
+    { "path": "./packages/reverse/scripts" },
     { "path": "./packages/subprocess/subprocess" },
     { "path": "./packages/subprocess/subprocess-local" },
     { "path": "./packages/ssh/ssh" },

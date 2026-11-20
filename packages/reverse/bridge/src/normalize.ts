@@ -15,6 +15,7 @@
 import {
   ReverseArgsError,
   validateAddress,
+  validateBundleId,
   validateDevicePath,
   validateImageSelector,
   validateLength,
@@ -68,6 +69,28 @@ function objectOf(raw: unknown): Record<string, unknown> {
   return raw as Record<string, unknown>
 }
 
+/** Reverse-DNS prefixes that mark a process filter as a bundle identifier rather than a name fragment. */
+const BUNDLE_ID_PREFIXES = ['com.', 'org.', 'net.', 'cn.', 'io.', 'me.', 'dev.', 'co.'] as const
+
+/**
+ * Accept a process filter that is either a name fragment or a bundle identifier.
+ *
+ * The resident matches both, so a fragment is passed through untouched. A filter
+ * that announces itself as reverse-DNS is validated instead: a malformed bundle id
+ * would otherwise match no process at all and read as "the app is not running".
+ * @param raw - caller value.
+ * @returns the filter to send, or `undefined` when there is none.
+ */
+function validateProcessFilter(raw: unknown): string | undefined {
+  const text = validateOptionalText(raw, 'filter', 256)
+  if (text === undefined) return undefined
+  const trimmed = text.trim()
+  const lowered = trimmed.toLowerCase()
+  const declaredBundleId = BUNDLE_ID_PREFIXES.some(prefix => lowered.startsWith(prefix))
+  if (!declaredBundleId) return trimmed
+  return validateBundleId(trimmed)
+}
+
 /**
  * Canonicalize one operation's arguments.
  * @param op - the operation the arguments belong to.
@@ -81,7 +104,7 @@ export function normalizeArguments<K extends ReverseOp>(op: K, raw: unknown): Re
     case 'system.hello':
       return {} as ReverseArg<K>
     case 'process.list': {
-      const filter = validateOptionalText(field(args, 'filter'), 'filter', 256)
+      const filter = validateProcessFilter(field(args, 'filter'))
       return { ...filter === undefined ? {} : { filter } } as ReverseArg<K>
     }
     case 'process.images':

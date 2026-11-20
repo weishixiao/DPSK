@@ -9,12 +9,27 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { defineTool, ToolContextUnavailableError } from '@deepseek-ai/dsh-tools'
 import type { ReverseBridge } from '@deepseek-ai/dsh-reverse-bridge'
 import { normalizeArguments } from '@deepseek-ai/dsh-reverse-bridge'
 
 export const name = 'tool-reverse-memory'
 export const inject = ['tools', 'reverse']
+
+/** Configuration of this tool package. */
+export interface Config {
+  /**
+   * Register this package's tools. Defaults to true. A profile that does not want
+   * the capability at all sets it false, and the model never sees the tool.
+   */
+  enabled?: boolean
+}
+
+/** Schema for {@link Config}. */
+export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(true),
+})
 
 /** Value types the resident can read, scan and write; must match the protocol's table. */
 const VALUE_TYPES = ['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'u64', 'i64', 'float', 'double'] as const
@@ -25,8 +40,10 @@ const LABEL_TIMEOUT_MS = 1_500
 /**
  * Register the memory tools.
  * @param ctx - registrant context with the tool registry and the reverse bridge.
+ * @param config - whether this package registers its tools at all.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
+  if ((config as Required<Config>).enabled === false) return
   const reverse: ReverseBridge = ctx.reverse
 
   ctx.tools.register(defineTool({

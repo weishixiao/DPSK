@@ -64,6 +64,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
 | `packages/reverse/tool-tweak/` | `reverse_hook_install`、`reverse_inject_dylib`（前置一次审批；安装行为本身返回 `unsupported`） |
+| `packages/reverse/scripts/` | `reverse_script_save`、`reverse_script_list`、`reverse_script_read`、`reverse_script_delete`：把 hook、内存脚本与笔记当成文件存起来 |
 | `packages/bundle/reverse/` | 可选 bundle，`cordis.patch.yml` 只 insert 自己的行 |
 | `packages/llm/llm-failover/` | 多模型路由：某个 provider 报余额/凭据失败时，下一步切到配置里的下一个 provider |
 
@@ -100,12 +101,30 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 
 | 文件 | 内容 |
 |---|---|
-| `Tweak.xm` | `%ctor` 启动监听，不 hook SpringBoard 自身任何行为 |
+| `Tweak.xm` | `%ctor` 启动监听，不 hook SpringBoard 自身任何行为；启动期异常只记日志，常驻端离线，桌面照常运行 |
 | `ReverseResident.plist` | 过滤器，只注入 `com.apple.SpringBoard` |
-| `RVServer.m` | 监听、按行分帧、操作表分发、`system.hello` |
+| `RVServer.m` | 监听、按行分帧、操作表分发、`system.hello`；每个请求在自己的 autorelease pool 里、在异常边界内执行，抛出的异常变成该请求的 `remote-error` 回包 |
 | `RVProcess.m` | 进程枚举（`sysctl` + `proc_pidpath`）、映像枚举（扫描 VM 区域里的 Mach-O 头）、符号表读取与重基 |
 | `RVMachO.m` | 文件级 Mach-O 分析：依赖、段与节、加密标志、平台、ObjC 名称、字符串 |
 | `RVMemory.m` | `mach_vm_read_overwrite` 读、区域遍历扫描、写前保存原保护并恢复 |
+
+### 故障收敛
+
+常驻端跑在 SpringBoard 里，它放出去的每一个失败都要由桌面来付。三道边界把 bug 关在常驻端这一侧：
+
+| 边界 | 兜住什么 |
+|---|---|
+| `%ctor` | 启动期异常记日志后吞掉：socket 就是没建起来，`reverse_status` 回答 `offline`，桌面继续跑 |
+| 分发层（`RVServer.m`） | 服务某个操作时抛的异常变成该请求的 `remote-error` 回包；回包照常送出，连接不断，下一个请求照常服务 |
+| 逐请求 pool（`RVServer.m`） | 每个回包的临时对象在读取下一行之前就释放了，长连接的客户端不会把历次扫描的内存攒起来 |
+
+异常从不被静默吞掉：名字和原因都会记进日志，就是 `log stream --predicate 'eventMessage CONTAINS "rv:"'` 能看到的内容。
+
+Tweak 也是**串接**而不是替换进程原有的未捕获异常处理器，所以别的 tweak 的处理器和系统自带的崩溃上报照常工作。
+
+### 定位目标
+
+`reverse_process_list` 接名字片段，也接 **BundleID**：`com.burbn.instagram` 和 `Instagram` 一样能找到那个 app，返回结果里每个进程都带 `bundleId`。以反域名前缀开头的过滤器会先按 BundleID 校验再发出，格式错的在这里就被拒，而不是回一个空列表、看起来像"app 没在运行"。
 
 ### Theos 环境
 
@@ -129,7 +148,26 @@ make install            # 或把 deb 交给用户的包管理器
 <a id="装配与开关"></a>
 ## 装配与开关
 
-逆向能力**整体**由一个 bundle 开关控制：把 `@deepseek-ai/dsh-reverse-bundle` 加进 profile 的 `dsh.profile.bundles` 就启用，去掉即彻底不存在。没有"半开"状态，因为工具存在而桥不在只会让每次调用报配置错误。
+逆向能力**整体**由一个 bundle 开关控制：把 `@deepseek-ai/dsh-reverse-bundle` 加进 profile 的 `dsh.profile.bundles` 就启用，去掉即彻底不存在。
+
+单项能力也可以单独关掉：给那一行加 `config: { enabled: false }`，该包就一个工具都不注册。模型没有可调的东西，也就不会有它的审批弹窗。想"保留进程与内存分析，去掉 hook 生成器"时用这一层。
+
+```yaml
+    - id: tool-reverse-tweak
+      name: '@deepseek-ai/dsh-tool-reverse-tweak'
+      config:
+        enabled: false        # 不再有 reverse_hook_install / reverse_inject_dylib
+```
+
+| 行 | 能力 | 带来的工具 |
+|---|---|---|
+| `reverse-bridge` | 桥本身 | — |
+| `tool-reverse-process` | 运行中的进程 | `reverse_status`、`reverse_process_list`、`reverse_process_images` |
+| `tool-reverse-macho` | 静态文件分析 | `reverse_macho_analyze` |
+| `tool-reverse-symbol` | 符号查找 | `reverse_symbols` |
+| `tool-reverse-memory` | 目标内存读、扫描、写 | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
+| `tool-reverse-tweak` | Hook 与注入请求 | `reverse_hook_install`、`reverse_inject_dylib` |
+| `reverse-scripts` | 落盘的脚本 | `reverse_script_save`、`reverse_script_list`、`reverse_script_read`、`reverse_script_delete` |
 
 自分 profile 片段：
 
@@ -146,10 +184,12 @@ dsh:
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `enabled` | `true` | 关闭后所有调用直接失败，不发包 |
+| `enabled` | `true` | 关闭后所有调用直接失败、不发包，但各行仍挂载 |
 | `socketPath` | `/var/mobile/Library/DSHReverse/rvd.sock` | 与常驻端一致 |
 | `timeoutMs` | `20000` | 单个请求总时限 |
 | `connectTimeoutMs` | `2000` | 单次连接时限 |
+
+`reverse-scripts` 把内容写进 `<dsh home>/reverse/scripts`，一个脚本一个文件：hook 是 `.xm`，内存脚本是 `.json`，笔记是 `.md`。把该行的 `directory` 指向编辑器或 Theos 能读到的目录即可改用别处。同名再保存就是覆盖旧文件，这也是改完脚本写回去的方式。
 
 设备上没有装常驻端时，`reverse_status` 会回答 `offline` 并给出原因，而不是让整个组合装配失败。
 
@@ -205,6 +245,7 @@ dsh:
 | `inject.dylib` | 同上，返回 `unsupported`。用越狱自带的 dylib 注入器或 tweak 过滤器加载 |
 | 远程 Theos 编译 | `system.hello` 的 `theos` 字段只报告设备上是否可见 Theos；resident 尚未驱动编译 |
 | `objc-method` 符号 | 仅从文件符号表与名称表推断，尚未从目标运行时读取 class/method 列表 |
+| 异常保护的范围 | 兜住的是 ObjC 异常与可返回的 mach 错误码。野指针、`SIGSEGV` 这类进程级崩溃无法在库内兜住——那种情况 Tweak 只保证不会因为"监听没起来"而拖垮桌面 |
 | 文档配对记录 | 本目录的中英配对 `readme.i18n.yaml` 尚未生成：在有 Node 的机器上执行 `pnpm run verify-translation-pairing --write docs/reverse/readme.md` |
 
 <a id="排障"></a>

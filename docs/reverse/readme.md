@@ -64,6 +64,7 @@ The seam has the usual three roles: `ReverseBridge` (Service Definition, `packag
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
 | `packages/reverse/tool-tweak/` | `reverse_hook_install`, `reverse_inject_dylib` (behind one approval; the installation itself answers `unsupported`) |
+| `packages/reverse/scripts/` | `reverse_script_save`, `reverse_script_list`, `reverse_script_read`, `reverse_script_delete`: hooks, memory scripts and notes kept as files |
 | `packages/bundle/reverse/` | Optional bundle whose `cordis.patch.yml` only inserts its own rows |
 | `packages/llm/llm-failover/` | Multi-model routing: when a provider answers with a quota or credential failure, the next step selects the next configured provider |
 
@@ -100,12 +101,30 @@ Source lives in `native/reverse-resident/`:
 
 | File | Content |
 |---|---|
-| `Tweak.xm` | `%ctor` starts the listener; hooks nothing of SpringBoard's own behaviour |
+| `Tweak.xm` | `%ctor` starts the listener and hooks nothing of SpringBoard's own behaviour; a start-up exception is logged and leaves the resident offline rather than the desktop down |
 | `ReverseResident.plist` | Filter: only `com.apple.SpringBoard` |
-| `RVServer.m` | Listening socket, line framing, dispatch table, `system.hello` |
+| `RVServer.m` | Listening socket, line framing, dispatch table, `system.hello`; every request runs in its own autorelease pool inside an exception boundary that turns a raised exception into a `remote-error` frame |
 | `RVProcess.m` | Process list (`sysctl` + `proc_pidpath`), image enumeration (Mach-O headers found at VM-region starts), symbol table reading and rebasing |
 | `RVMachO.m` | File-level analysis: dependencies, segments and sections, encryption flag, platform, Objective-C names, strings |
 | `RVMemory.m` | `mach_vm_read_overwrite` reads, region-walk scans, writes that save and restore the region's protection |
+
+### Failure containment
+
+The resident runs inside SpringBoard, so every failure it allows to escape costs the home screen. Three boundaries keep a bug on the resident's side of that line:
+
+| Boundary | What it contains |
+|---|---|
+| `%ctor` | A start-up exception is logged and swallowed: the socket is simply never created, `reverse_status` answers `offline`, and the desktop keeps running |
+| Dispatcher (`RVServer.m`) | An exception raised while serving one operation becomes that request's `remote-error` frame; the answer is delivered, the connection stays open, the next request is served normally |
+| Per-request pool (`RVServer.m`) | Each answer's temporaries are released before the next line is read, so a long-lived client does not accumulate the memory of every scan it ever asked for |
+
+An exception is never swallowed silently: it is logged with its name and reason, which is what `log stream --predicate 'eventMessage CONTAINS "rv:"'` shows.
+
+The tweak also chains, rather than replaces, the process's uncaught-exception handler, so another tweak's handler and the system's own crash reporting keep working.
+
+### Locating a target
+
+`reverse_process_list` takes a name fragment or a **bundle identifier**: `com.burbn.instagram` finds the app as well as `Instagram` does, and the answer carries the `bundleId` of each process. A filter that starts with a reverse-DNS prefix is validated as a bundle identifier before it is sent, so a malformed one is refused here instead of coming back as an empty list that reads like "the app is not running".
 
 ### Theos environment
 
@@ -129,7 +148,26 @@ make install            # or hand the deb to the user's package manager
 <a id="assembly-and-switches"></a>
 ## Assembly and switches
 
-The capability switches **as a whole** through one bundle: add `@deepseek-ai/dsh-reverse-bundle` to the profile's `dsh.profile.bundles` to enable it, remove it to make it non-existent. There is no half-open state: tools without the bridge would answer every call with a configuration error.
+The capability switches **as a whole** through one bundle: add `@deepseek-ai/dsh-reverse-bundle` to the profile's `dsh.profile.bundles` to enable it, remove it to make it non-existent.
+
+One capability can also be dropped on its own: give that row `config: { enabled: false }`, and the package registers no tools at all. The model then has nothing to call, and no approval prompt can appear for it. This is the switch for "keep process and memory analysis, drop the hook generator".
+
+```yaml
+    - id: tool-reverse-tweak
+      name: '@deepseek-ai/dsh-tool-reverse-tweak'
+      config:
+        enabled: false        # no reverse_hook_install, no reverse_inject_dylib
+```
+
+| Row | Capability | Tools it brings |
+|---|---|---|
+| `reverse-bridge` | The seam itself | — |
+| `tool-reverse-process` | Running processes | `reverse_status`, `reverse_process_list`, `reverse_process_images` |
+| `tool-reverse-macho` | Static file analysis | `reverse_macho_analyze` |
+| `tool-reverse-symbol` | Symbol lookup | `reverse_symbols` |
+| `tool-reverse-memory` | Reading, scanning, writing target memory | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
+| `tool-reverse-tweak` | Hook and inject requests | `reverse_hook_install`, `reverse_inject_dylib` |
+| `reverse-scripts` | Saved scripts on disk | `reverse_script_save`, `reverse_script_list`, `reverse_script_read`, `reverse_script_delete` |
 
 Fragment for your own profile:
 
@@ -146,10 +184,12 @@ dsh:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Off fails every call without sending anything |
+| `enabled` | `true` | Off fails every call without sending anything, with the rows still mounted |
 | `socketPath` | `/var/mobile/Library/DSHReverse/rvd.sock` | Must match the resident |
 | `timeoutMs` | `20000` | Deadline of one request |
 | `connectTimeoutMs` | `2000` | Deadline of a single dial |
+
+`reverse-scripts` keeps what it writes in `<dsh home>/reverse/scripts` (one file per script: `.xm` for a hook, `.json` for a memory script, `.md` for a note). Set `directory` on that row to point it somewhere an editor or Theos can reach. Saving the same name again replaces the file, which is how an edited script is written back.
 
 Without the resident installed, `reverse_status` answers `offline` with the reason instead of failing the composition.
 
@@ -203,6 +243,7 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 | `inject.dylib` | Same, `unsupported`. Load the dylib with the jailbreak's own injector or a tweak filter |
 | Remote Theos builds | `system.hello`'s `theos` field only reports whether Theos is visible on device; the resident does not drive a build yet |
 | `objc-method` symbols | Inferred from the file's symbol and name tables only; the target runtime's class/method lists are not read yet |
+| Reach of the exception boundary | It contains Objective-C exceptions and mach errors that return a code. A wild pointer or `SIGSEGV` is a process-level crash no in-process guard can contain — what the tweak guarantees is narrower: a resident that fails to start never takes the desktop with it |
 | Bilingual pairing record | `readme.i18n.yaml` for this directory is not generated yet: on a machine with Node run `pnpm run verify-translation-pairing --write docs/reverse/readme.md` |
 
 <a id="troubleshooting"></a>

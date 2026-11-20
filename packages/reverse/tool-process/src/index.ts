@@ -8,6 +8,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ReverseBridge } from '@deepseek-ai/dsh-reverse-bridge'
 import { normalizeArguments } from '@deepseek-ai/dsh-reverse-bridge'
@@ -15,14 +16,30 @@ import { normalizeArguments } from '@deepseek-ai/dsh-reverse-bridge'
 export const name = 'tool-reverse-process'
 export const inject = ['tools', 'reverse']
 
+/** Configuration of this tool package. */
+export interface Config {
+  /**
+   * Register this package's tools. Defaults to true. A profile that does not want
+   * the capability at all sets it false, and the model never sees the tool.
+   */
+  enabled?: boolean
+}
+
+/** Schema for {@link Config}. */
+export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(true),
+})
+
 /** How many images a rendered list shows before it summarizes. */
 const RENDER_IMAGES = 80
 
 /**
  * Register the process tools.
  * @param ctx - registrant context with the tool registry and the reverse bridge.
+ * @param config - whether this package registers its tools at all.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
+  if ((config as Required<Config>).enabled === false) return
   const reverse: ReverseBridge = ctx.reverse
 
   ctx.tools.register(defineTool({
@@ -93,13 +110,15 @@ export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'reverse_process_list',
     description:
-      'List processes running on the device, with pid, name, executable path and effective uid, '
-      + 'optionally filtered by a case-insensitive fragment of the name or path. Use it to turn a '
-      + 'third-party app into the pid the other reverse tools take.',
+      'List processes running on the device, with pid, name, executable path, bundle identifier and '
+      + 'effective uid, optionally filtered by a case-insensitive fragment of the name, executable path '
+      + 'or bundle identifier. Use it to turn a third-party app into the pid the other reverse tools take.',
     parameters: {
       filter: {
         type: 'string',
-        description: 'Case-insensitive fragment of the process name or executable path, e.g. "TikTok" or "WeChat".',
+        description:
+          'Case-insensitive fragment of the process name or executable path, or a bundle identifier such as '
+          + '"com.burbn.instagram" to locate an app by what it is rather than what its binary is called.',
       },
     },
     output: {
