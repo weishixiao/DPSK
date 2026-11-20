@@ -175,6 +175,12 @@ else
   prefix[${#prefix[@]}]="$target_triple"
   prefix[${#prefix[@]}]="-isysroot"
   prefix[${#prefix[@]}]="$target_sysroot"
+  # V8 reads this to decide it is on iOS, and its `platform-darwin.cc` then
+  # takes the declarations from `src/base/ios-headers.h` instead of the SDK's
+  # `mach/mach_vm.h`, which is a stub that refuses to compile. The symbols are
+  # real: libsystem_kernel exports `mach_vm_map` and `mach_vm_remap` on iOS.
+  # `--dest-os=mac` no longer defines it, so the wrapper does.
+  prefix[${#prefix[@]}]="-DV8_TARGET_OS_IOS=1"
 fi
 
 exec "$real" "${prefix[@]}" ${args[@]+"${args[@]}"}
