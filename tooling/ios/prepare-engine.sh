@@ -119,13 +119,19 @@ report_first_failure() {
   [ -n "$lineno" ] || return 0
   say "first failure: make.log line $lineno"
   # Nothing in an error message says which flags were in play; the compiler
-  # invocation immediately above it does.
+  # invocation above it does. It is longer than one annotation, and the flags
+  # that matter (`-std=`, `-isysroot`, the arch) sit at its end, so the head and
+  # the tail both go up.
   command_line=$(awk -v stop="$lineno" \
     'NR < stop && (/\/clang/ || /\/c\+\+/ || /\/g\+\+/) { line = $0 } NR >= stop { print line; exit }' \
     "$log")
-  printf '%s\n' "${command_line:-(no command line above the first error)}" \
-    | fold -w 170 | head -n 4 \
-    | sed 's/^/::error title=engine command::/'
+  if [ -n "$command_line" ]; then
+    printf '%s\n' "$command_line" | fold -w 170 > "$log.command"
+    head -n 2 "$log.command" | sed 's/^/::error title=engine command::/'
+    tail -n 4 "$log.command" | sed 's/^/::error title=engine command (end)::/'
+  else
+    printf '::error title=engine command::%s\n' "(no compiler invocation above the first error)"
+  fi
   head -n "$((lineno + 15))" "$log" | tail -n 16 \
     | grep -E 'error:|fatal error:' | head -n 6 | cut -c1-170 \
     | sed 's/^/::error title=engine error::/' || true
@@ -181,6 +187,11 @@ stage_node() {
     export CFLAGS_host="-isysroot $macsdk"
     export CXXFLAGS_host="-isysroot $macsdk"
     export LDFLAGS_host="-isysroot $macsdk"
+    # The C++ standard is per-toolset in gyp's Makefile (`CFLAGS_CC.host`), and a
+    # cross build of Node 24 needs a C++20 compiler on both sides: the host tools
+    # compile V8's abseil, which refuses anything older than C++17.
+    export CFLAGS_C_host="-isysroot $macsdk"
+    export CFLAGS_CC_host="-std=gnu++20 -isysroot $macsdk"
 
     local ios_flags="-target arm64-apple-ios$ios_min -isysroot $sdk"
     export CC_target="$host_cc $ios_flags"
@@ -189,6 +200,8 @@ stage_node() {
     export CFLAGS_target="$ios_flags"
     export CXXFLAGS_target="$ios_flags"
     export LDFLAGS_target="$ios_flags"
+    export CFLAGS_C_target="$ios_flags"
+    export CFLAGS_CC_target="-std=gnu++20 $ios_flags"
 
     rm -rf out
 
