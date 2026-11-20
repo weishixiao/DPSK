@@ -53,8 +53,18 @@ for argument in "$@"; do
   esac
 done
 
-say() { printf '\n=== %s\n' "$1"; }
-fail() { printf 'prepare-engine: %s\n' "$1" >&2; exit 1; }
+# Under Actions the job log needs a sign-in to read, while `::notice::` lines show
+# on the run page itself; the trace is the only progress a reader of the run sees.
+say() {
+  printf '\n=== %s\n' "$1"
+  [ "${GITHUB_ACTIONS:-}" = true ] && printf '::notice::%s\n' "$1"
+  return 0
+}
+fail() {
+  printf 'prepare-engine: %s\n' "$1" >&2
+  [ "${GITHUB_ACTIONS:-}" = true ] && printf '::error title=engine build::%s\n' "$1"
+  exit 1
+}
 
 # ── the harness: one deployed copy of the CLI the engine boots ───────────────
 

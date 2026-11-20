@@ -52,18 +52,16 @@ jobs:
         run: |
           set -o pipefail
           tooling/ios/prepare-engine.sh 2>&1 | tee "$RUNNER_TEMP/engine.log"
-      # The job log needs a sign-in to read; the step summary is on the run page
-      # for anyone. An unproven cross-build fails for reasons the last screenful
-      # of output names.
+      # The job log needs a sign-in to read; annotations show on the run page
+      # itself. A failed cross-build is diagnosed from the last screenful.
       - name: Leave the tail of a failed build on the run page
         if: failure() && steps.staged.outputs.cache-hit != 'true'
         run: |
-          {
-            echo '### the engine build failed'
-            echo '```'
-            tail -n 80 "$RUNNER_TEMP/engine.log"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          tail -n 60 "$RUNNER_TEMP/engine.log" >> "$GITHUB_STEP_SUMMARY" || true
+          tail=$(tail -n 60 "$RUNNER_TEMP/engine.log" 2>/dev/null \
+            | sed -e 's/%/%25/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g') \
+            || tail='the log is missing'
+          printf '::error title=engine build tail::%s\n' "$tail"
 
   ipa:
     name: unsigned ipa
