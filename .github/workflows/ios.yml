@@ -30,8 +30,6 @@ jobs:
     name: engine (Node for iOS, harness)
     runs-on: macos-15
     timeout-minutes: 120
-    env:
-      NODE_BUILD_DIR: ${{ runner.temp }}/node-build
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v5.0.0
@@ -49,6 +47,8 @@ jobs:
           key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
       - name: Build Node for iOS and deploy the harness
         if: steps.staged.outputs.cache-hit != 'true'
+        env:
+          NODE_BUILD_DIR: ${{ runner.temp }}/node-build
         run: tooling/ios/prepare-engine.sh
       - name: Keep the configure log of a failed cross-build
         if: failure()
