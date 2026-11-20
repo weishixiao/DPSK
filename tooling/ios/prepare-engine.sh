@@ -186,7 +186,24 @@ else
   prefix[${#prefix[@]}]="-DV8_HAVE_TARGET_OS=1"
 fi
 
-exec "$real" "${prefix[@]}" ${args[@]+"${args[@]}"}
+# Trailing flags, because gyp puts its own `-O3` and `-gdwarf-2` at the end of the
+# command line and the last one wins.
+#
+# Debug info is the single largest cost in this build and the app never reads it:
+# a shipped libnode.dylib is stripped by the archive step, and a 300 MB dylib of
+# DWARF also slows the link and the sign step. `-g0` removes it for both sides.
+#
+# Host tools are different: `mksnapshot`, `torque` and the rest run once, on this
+# Mac, to generate a snapshot and some C++ sources. Optimizing them at `-O3` costs
+# the same as optimizing V8 itself and buys nothing at run time, so they build at
+# `-O1`. The target keeps gyp's `-O3`: that code ships.
+suffix=()
+if [ "$kind" = host ]; then
+  suffix[${#suffix[@]}]="-O1"
+fi
+suffix[${#suffix[@]}]="-g0"
+
+exec "$real" "${prefix[@]}" ${args[@]+"${args[@]}"} "${suffix[@]}"
 WRAPPER
   sed -i '' \
     -e "s|@REAL@|$real|g" \

@@ -29,7 +29,12 @@ jobs:
   engine:
     name: engine (Node for iOS, harness)
     runs-on: macos-15
-    timeout-minutes: 120
+    # A cold cross-build compiles all of V8 twice (host snapshot tools, then the
+    # target) and took just over two hours on a 3-core runner: the first attempt
+    # was killed at 120 minutes while still inside v8_initializers. Warm runs hit
+    # the staged-engine cache and take seconds, so the ceiling only has to cover
+    # the cold case, and the wall clock is cheaper than a bigger runner.
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v5.0.0
@@ -70,7 +75,7 @@ jobs:
     name: unsigned ipa
     needs: engine
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install xcodegen
