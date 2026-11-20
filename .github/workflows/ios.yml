@@ -58,10 +58,13 @@ jobs:
         if: failure() && steps.staged.outputs.cache-hit != 'true'
         run: |
           tail -n 60 "$RUNNER_TEMP/engine.log" >> "$GITHUB_STEP_SUMMARY" || true
-          tail=$(tail -n 60 "$RUNNER_TEMP/engine.log" 2>/dev/null \
-            | sed -e 's/%/%25/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g') \
-            || tail='the log is missing'
-          printf '::error title=engine build tail::%s\n' "$tail"
+          # One annotation shows only its first line, so the tail goes up in
+          # short chunks instead: the last 3 KB of the log, ten displayed lines.
+          tail -c 3000 "$RUNNER_TEMP/engine.log" 2>/dev/null \
+            | tr '\r' '\n' | tr -d '\t' \
+            | awk '{gsub(/%/,"%25"); printf "%s | ", $0}' \
+            | fold -w 180 | tail -n 10 \
+            | sed 's/^/::error::engine log: /' || true
 
   ipa:
     name: unsigned ipa
