@@ -155,7 +155,7 @@ for a in "$@"; do
     -isysroot|-target|-arch|-miphoneos-version-min|-mmacosx-version-min)
       skip=1
       ;;
-    -isysroot=*|-target=*|-arch=*)
+    -isysroot=*|-target=*|-arch=*|-mmacosx-version-min=*|-miphoneos-version-min=*|-mios-version-min=*)
       ;;
     *)
       args[${#args[@]}]="$a"
@@ -285,12 +285,20 @@ stage_node() {
 
     rm -rf out
 
-    if ! configure_node --dest-os=ios 2>"$work_dir/configure-ios.log"; then
-      say "Node's configure does not accept --dest-os=ios; retrying as a mac build against the iPhoneOS sysroot"
-      cat "$work_dir/configure-ios.log" >&2
+    # `--dest-os=mac` is the right answer even though the target is iOS. Node's
+    # configure passes the dest-os straight to gyp as `OS`, and gyp knows only
+    # mac, win and linux: `OS=ios` matches none of the platform blocks, so gyp
+    # falls back to its linux defaults — Node's own gyp then links the host
+    # tools with `-Wl,--start-group`, which ld64 rejects, and compiles with
+    # `-D_LARGEFILE_SOURCE`. Naming mac keeps the platform layer native and
+    # leaves the actual target to the compiler wrapper, which is the only place
+    # that knows a build is split between a macOS host and an iOS target.
+    if ! configure_node --dest-os=mac 2>"$work_dir/configure-mac.log"; then
+      say "Node's configure does not accept --dest-os=mac; retrying as an ios build"
+      cat "$work_dir/configure-mac.log" >&2
       rm -rf out
-      configure_node --dest-os=mac \
-        || fail "configure failed both ways — read $work_dir/configure-ios.log"
+      configure_node --dest-os=ios \
+        || fail "configure failed both ways — read $work_dir/configure-mac.log"
     fi
 
     # The snapshot generator is a host tool; everything else is the iOS target.
