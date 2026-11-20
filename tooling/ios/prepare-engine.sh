@@ -217,6 +217,21 @@ report_first_failure() {
   return 0
 }
 
+# c-ares carries a checked-in macOS configuration (`config/darwin`) that Node
+# reuses verbatim for an iOS target. Two of its macOS truths are untrue on iOS:
+# the iPhoneOS SDK has no `sys/random.h`, and libSystem exports no `getentropy`.
+# With both undefined c-ares reads `arc4random_buf` instead, which iOS has.
+patch_ios_deps() {
+  local source_dir="$1" ares_config
+  ares_config="$source_dir/deps/cares/config/darwin/ares_config.h"
+  [ -f "$ares_config" ] || return 0
+  sed -i '' -E \
+    -e 's@^#define[[:space:]]+HAVE_SYS_RANDOM_H([[:space:]].*)?$@/* #undef HAVE_SYS_RANDOM_H */@' \
+    -e 's@^#define[[:space:]]+HAVE_GETENTROPY([[:space:]].*)?$@/* #undef HAVE_GETENTROPY */@' \
+    "$ares_config"
+  return 0
+}
+
 stage_node() {
   say "building Node $node_version for iOS arm64"
   command -v xcrun >/dev/null || fail "xcrun is missing — this step needs Xcode"
@@ -265,6 +280,8 @@ stage_node() {
     export CC_target="$toolchain_dir/cc"
     export CXX_target="$toolchain_dir/cxx"
     export LINK_target="$toolchain_dir/cxx"
+
+    patch_ios_deps "$source_dir"
 
     rm -rf out
 
