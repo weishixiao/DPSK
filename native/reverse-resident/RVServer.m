@@ -107,6 +107,8 @@ static NSArray<NSString *> *RVServedOps(void) {
       @"memory.read",
       @"memory.scan",
       @"memory.write",
+      @"hook.install",
+      @"inject.dylib",
     ];
   });
   return ops;
@@ -379,27 +381,63 @@ static NSData *RVFrame(NSString *identifier, id result, RVError *error, NSDate *
     return [RVMemory write:(pid_t)pid address:address type:type value:value error:error];
   };
 
-  // The two mutating operations that need code the resident does not carry yet.
-  // They answer `unsupported` with the reason, never a silent success.
+  // The two mutating operations that put code into another process.
+  //
+  // Neither compiles anything: the resident has no toolchain, and a hook IS code in
+  // the target. What the resident can do is load an already-built dylib at the
+  // target's own dlopen and then call an entry point in it, which is what the
+  // pipeline `reverse_theos_scaffold` → `reverse_theos_build` → here produces.
   table[@"hook.install"] = ^id(NSDictionary *args, RVError **error) {
-    if (error != NULL) {
-      *error = [RVError errorWithCode:RVCodeUnsupported
-                              message:@"hook.install is not served by this resident build: it needs an "
-                                      @"inline-hook engine inside the target process. Use the generated "
-                                      @"Theos tweak from reverse_hook_install's saved source and load it "
-                                      @"as a tweak instead."];
+    long long pid = 0;
+    NSString *symbol = nil, *mode = nil, *image = nil;
+    if (!RVInteger(args, @"pid", &pid, error)) return nil;
+    if (!RVString(args, @"symbol", &symbol, error)) return nil;
+    if (!RVString(args, @"mode", &mode, error)) return nil;
+    if (args[@"image"] != nil && !RVString(args, @"image", &image, error)) return nil;
+
+    id library = args[@"dylibPath"];
+    if (![library isKindOfClass:[NSString class]] || [(NSString *)library length] == 0) {
+      if (error != NULL) {
+        *error = [RVError errorWithCode:RVCodeUnsupported
+                                message:@"hook.install needs dylibPath: a hook is code running inside "
+                                        @"the target, and this resident carries no compiler. Build the "
+                                        @"generated source first (reverse_theos_scaffold, then "
+                                        @"reverse_theos_build) and pass the resulting .dylib here."];
+      }
+      return nil;
     }
-    return nil;
+
+    NSDictionary *injected = [RVInjector inject:(pid_t)pid
+                                      dylibPath:(NSString *)library
+                                         caller:0
+                                          error:error];
+    if (injected == nil) return nil;
+
+    // Resolve the entry point now, not before: the symbol may live in the library
+    // that was just loaded.
+    uint64_t entry = 0;
+    if (symbol.length > 0 && ![symbol isEqualToString:@"-"]) {
+      entry = [RVInjector addressOf:symbol inProcess:(pid_t)pid image:image error:NULL];
+      if (entry != 0) {
+        if ([RVInjector call:(pid_t)pid address:entry argument:0 label:symbol error:error] == nil) {
+          return nil;
+        }
+      }
+    }
+
+    return @{
+      @"handle": (NSString *)library,
+      @"mode": mode,
+      @"original": entry != 0 ? [NSString stringWithFormat:@"0x%llx", (unsigned long long)entry] : [NSNull null],
+    };
   };
 
   table[@"inject.dylib"] = ^id(NSDictionary *args, RVError **error) {
-    if (error != NULL) {
-      *error = [RVError errorWithCode:RVCodeUnsupported
-                              message:@"inject.dylib is not served by this resident build: it needs a "
-                                      @"remote thread inside the target. Load the dylib with your "
-                                      @"jailbreak's dylib injector or a SpringBoard tweak's filter."];
-    }
-    return nil;
+    long long pid = 0;
+    NSString *path = nil;
+    if (!RVInteger(args, @"pid", &pid, error)) return nil;
+    if (!RVString(args, @"dylibPath", &path, error)) return nil;
+    return [RVInjector inject:(pid_t)pid dylibPath:path caller:0 error:error];
   };
 
   return table;

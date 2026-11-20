@@ -38,7 +38,7 @@ Confirm it is up by its own log line, `rv: resident listening on …`, and by `r
 | `macho.analyze` | on-disk file: load commands, sections, dylibs, encryption, strings |
 | `memory.read`, `memory.scan` | `mach_vm_read_overwrite` over the target's regions |
 | `memory.write` | `mach_vm_protect` + `mach_vm_write`, restoring protection afterwards |
-| `hook.install`, `inject.dylib` | **`unsupported`**: cross-process hooking and injection are not implemented here |
+| `hook.install`, `inject.dylib` | Implemented by `RVInjector`: the target's own `dlopen` loads the library, then a thread started inside the target calls the exported entry point |
 
 `unsupported` is a real answer, not a stub: the operation is in the table so a client learns the capability is absent rather than getting a silent timeout, and `system.hello` reports the same list.
 

@@ -63,7 +63,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 | `packages/reverse/tool-macho/` | `reverse_macho_analyze` |
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
-| `packages/reverse/tool-tweak/` | `reverse_hook_install`、`reverse_inject_dylib`（前置一次审批；安装行为本身返回 `unsupported`） |
+| `packages/reverse/tool-tweak/` | `reverse_hook_install`、`reverse_inject_dylib`（前置一次审批；常驻端用注入器完成实际装载） |
 | `packages/reverse/tool-theos/` | `reverse_theos_scaffold`、`reverse_theos_build`：写出纯 Objective-C 的 Theos 工程，再经一次审批调用本机 `make`（不进 `ctx.reverse`，走 `ctx.shell`） |
 | `packages/reverse/scripts/` | `reverse_script_save`、`reverse_script_list`、`reverse_script_read`、`reverse_script_delete`：把 hook、内存脚本与笔记当成文件存起来 |
 | `packages/bundle/reverse/` | 可选 bundle，`cordis.patch.yml` 只 insert 自己的行 |
@@ -93,7 +93,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 
 错误码：`bad-request`、`invalid-args`、`not-connected`、`timeout`、`cancelled`、`denied`、`not-found`、`target-gone`、`unsupported`、`protocol-mismatch`、`remote-error`。
 
-`system.hello` 回答里的 `ops` 是**该常驻端实际服务**的操作列表。当前 resident 构建服务前九个；`hook.install` 与 `inject.dylib` 返回 `unsupported` 并说明原因（见[已知边界](#已知边界)）。
+`system.hello` 回答里的 `ops` 是**该常驻端实际服务**的操作列表。当前 resident 构建服务全部十一个。`hook.install` 与 `inject.dylib` 不是"暂不支持"：它们在常驻端侧被接到注入器（`RVInjector`），用目标进程自己的 `dlopen` 装载 dylib，再在目标里起一条线程调用它的导出入口（见[设备侧常驻端](#设备侧常驻端)与[已知边界](#已知边界)）。
 
 <a id="设备侧常驻端"></a>
 ## 设备侧常驻端
@@ -233,7 +233,7 @@ dsh:
 5. `reverse_macho_analyze {path:"/var/containers/.../App.app/App"}` —— 判断是否加壳、依赖什么、有无 ObjC 名称表。
 6. `reverse_memory_scan {pid, type:"u64", value:"0"}` —— 找数值（金币、剩余次数）。
 7. `reverse_memory_write {pid, address:"0x...", type:"u64", value:"999999"}` —— 每次写都要在打开的 turn 内点一次"允许一次"。
-8. `reverse_hook_install` —— 把你写好的 hook 源码经审批交给常驻端；本版本常驻端返回 `unsupported`，因此留下来的就是源码本身（见下方边界）。
+8. `reverse_hook_install` —— 把 hook 源码与它构建出的 `dylibPath` 一起经审批交给常驻端：先在目标里 `dlopen` 该库，再调用 `symbol` 指向的入口。不传 `dylibPath` 时常驻端拒绝，并指名要先构建（本构建的常驻端不编译任何源码）。
 9. `reverse_theos_scaffold {path, packageId, bundleId, scheme}` → `reverse_theos_build {path}` —— 把第 8 步的源码放进一个纯 Objective-C 的 Theos 工程并调用本机 `make`；构建那一步会在审批里写明完整命令行。
 
 <a id="安全边界"></a>
@@ -250,8 +250,10 @@ dsh:
 
 | 项 | 现状 |
 |---|---|
-| `hook.install` | 常驻端返回 `unsupported`。跨进程 inline hook 需要目标进程内的 hook 引擎，本版本没有内置；`reverse_hook_install` 仍会把你写的源码送去审批，所以会话里的源码就是 Theos 编译 tweak 的起点 |
-| `inject.dylib` | 同上，返回 `unsupported`。用越狱自带的 dylib 注入器或 tweak 过滤器加载 |
+| 注入实现在常驻端，**但尚未真机验证**。`RVInjector` 在目标里分配一段可执行存根、起一条远程线程、把 `dlopen`/入口地址用寄存器传进去；返回值写回目标的内存槽再读回来。可行性只经过源码推演：`thread_create_running` 需要目标可注入、共享缓存在各进程同一偏移等前提都没有在设备上验证过。失败形态是 `denied`（`thread_create_running` 被拒）或 `timeout`（槽位没被填上，远程线程被终止），两种情况都不会动目标进程的既有线程 |
+| `hook.install` 没有编译器 | 常驻端不编译任何源码。不传 `dylibPath` 时返回 `unsupported` 并指名要先构建；传了就装载。**inline hook（`MSHookFunction` 这类改写目标已有指令）不在这套机制里**——它要在目标进程内改写代码，需要另行解决；本构建的路径是"以 dylib 形式装载、由目标调用导出入口" |
+| `dylib` 装载的入口 | `hook.install` 装载后会去解析 `symbol` 并**调用一次**它，用返回的 `x0` 回执；不需要调用时传 `symbol: "-"` |
+| `inject.dylib` 的读权限 | 库必须在越狱可读的根路径下（`/var/jb`、`/var/mobile` 等）；路径不可读时返回 `denied`，提示装到能读的地方 |
 | `reverse_theos_build` 的构建 | 审批是唯一门槛，构建本身没有沙箱：Makefile 能以 harness 用户的身份做任何事。成功路径尚未在装有 Theos 的设备上跑过 |
 | 远程 Theos 编译 | `system.hello` 的 `theos` 字段只报告设备上是否可见 Theos；resident 不驱动编译。编译由 Node 侧的 `reverse_theos_build` 经 `ctx.shell` 调用本机 `make` 完成，没装 Theos 的设备得到 `theos-unavailable` |
 | `objc-method` 符号 | 仅从文件符号表与名称表推断，尚未从目标运行时读取 class/method 列表 |
@@ -272,3 +274,27 @@ dsh:
 ## 开发备注
 
 新增一个操作的做法：在 `protocol/src/types.ts` 的操作表加一行（名字、参数、结果），`validate.ts` 加校验，桥的 `normalize.ts` 加分支，工具包加 schema，常驻端在 `RVServer.m` 的操作表加 handler。五处都由编译器或类型检查盯着。
+<a id="测试"></a>
+## 测试
+
+`packages/reverse` 的单元测试按包放在 `tests/` 下，用仓库统一的 vitest：
+
+```sh
+pnpm vitest run packages/reverse
+```
+
+| 文件 | 钉住的性质 |
+|---|---|
+| `protocol/tests/validate.spec.ts` | 参数校验：pid 范围、地址不接受 0/内核半区、`1000` 按十六进制读、值不得超出宽度、路径不许相对或 `..`、地址必须落在目标已映射的映像里 |
+| `protocol/tests/frame.spec.ts` | 行分帧：半行不吐、CRLF、空行、超限即丢弃缓冲、非响应帧被拒 |
+| `bridge/tests/normalize.spec.ts` | 规范化：文本 pid、地址补 `0x`、扫描窗口、`hook.install` 的 `dylibPath` 可选但给出时校验、`inject.dylib` 的路径 |
+| `bridge/tests/approval.spec.ts` | 审批闸门：`call()` 结构性拒绝三个危险操作且不弹窗；`mutate()` 在无审批服务、答案非 `allowed-once`、审批抛异常时一律 `denied` 且**不发包**；只有批准后才走到传输层 |
+
+`approval.spec.ts` 用一条不存在的套接字路径：被拒绝的操作报 `denied`，被放行的报 `not-connected` —— 两者的区别正是"闸门在传输层之前"这件事的证明。
+
+写这些测试时发现两处「注释与实现不一致」，已按实际行为钉住而不是悄悄改代码：
+
+- `validateBundleId` 的正则并不要求点号，`Instagram` 能过，而它的 docstring 写的是 "must look like com.example.app"；
+- 同一条正则允许连续点，`com..bad` 能过。
+
+两处都只影响"模型写错时的报错早晚"，不影响安全边界；要收紧应当连同 docstring 一起改，属于单独的判断。

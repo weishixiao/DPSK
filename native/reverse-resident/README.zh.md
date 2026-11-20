@@ -38,7 +38,7 @@ THEOS=/opt/theos THEOS_PACKAGE_SCHEME=roothide make package
 | `macho.analyze` | 磁盘文件：加载命令、段与节、依赖 dylib、加密标志、字符串 |
 | `memory.read`、`memory.scan` | 在目标各 region 上用 `mach_vm_read_overwrite` 读 |
 | `memory.write` | `mach_vm_protect` + `mach_vm_write`，事后恢复原保护 |
-| `hook.install`、`inject.dylib` | **`unsupported`**：跨进程 hook 与注入未在此实现 |
+| `hook.install`、`inject.dylib` | 由 `RVInjector` 实现：在目标进程内用它自己的 `dlopen` 装载库，再在目标里起线程调用导出入口 |
 
 `unsupported` 是真实回答而非占位：该操作在表里，客户端因此得知能力缺失，而不是等到一次静默超时；`system.hello` 列出同一份表。
 

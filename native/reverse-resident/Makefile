@@ -19,7 +19,7 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ReverseResident
-ReverseResident_FILES = Tweak.xm RVServer.m RVProcess.m RVMachO.m RVMemory.m
+ReverseResident_FILES = Tweak.xm RVServer.m RVProcess.m RVMachO.m RVMemory.m RVInjector.m
 ReverseResident_CFLAGS = -fobjc-arc -Wall -Wextra -Wno-unused-parameter
 ReverseResident_FRAMEWORKS = Foundation UIKit
 

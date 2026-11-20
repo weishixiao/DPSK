@@ -63,7 +63,7 @@ The seam has the usual three roles: `ReverseBridge` (Service Definition, `packag
 | `packages/reverse/tool-macho/` | `reverse_macho_analyze` |
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
-| `packages/reverse/tool-tweak/` | `reverse_hook_install`, `reverse_inject_dylib` (behind one approval; the installation itself answers `unsupported`) |
+| `packages/reverse/tool-tweak/` | `reverse_hook_install`, `reverse_inject_dylib` (behind one approval; the resident loads the built library with its injector) |
 | `packages/reverse/tool-theos/` | `reverse_theos_scaffold`, `reverse_theos_build`: writes a plain Objective-C Theos project, then runs the device's own `make` behind one approval (through `ctx.shell`, never `ctx.reverse`) |
 | `packages/reverse/scripts/` | `reverse_script_save`, `reverse_script_list`, `reverse_script_read`, `reverse_script_delete`: hooks, memory scripts and notes kept as files |
 | `packages/bundle/reverse/` | Optional bundle whose `cordis.patch.yml` only inserts its own rows |
@@ -93,7 +93,7 @@ Operations: `system.hello`, `system.logs`, `process.list`, `process.images`, `pr
 
 Error codes: `bad-request`, `invalid-args`, `not-connected`, `timeout`, `cancelled`, `denied`, `not-found`, `target-gone`, `unsupported`, `protocol-mismatch`, `remote-error`.
 
-`system.hello`'s `ops` is what that resident **actually serves**. The current build serves the first nine; `hook.install` and `inject.dylib` answer `unsupported` with the reason (see [known boundaries](#known-boundaries)).
+`system.hello`'s `ops` is what that resident **actually serves**, and the current build serves all eleven. `hook.install` and `inject.dylib` are not stubs: the resident routes them to its injector (`RVInjector`), which loads the dylib through the target's own `dlopen` and then runs an exported entry point on a thread of its own (see [the resident](#the-resident) and [known boundaries](#known-boundaries)).
 
 <a id="device-side-resident"></a>
 ## Device-side resident
@@ -231,7 +231,7 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 5. `reverse_macho_analyze {path:"/var/containers/.../App.app/App"}` — encrypted, dependencies, Objective-C name tables.
 6. `reverse_memory_scan {pid, type:"u64", value:"0"}` — find a value (coins, remaining attempts).
 7. `reverse_memory_write {pid, address:"0x...", type:"u64", value:"999999"}` — each write needs one "allow once" inside the open turn.
-8. `reverse_hook_install` — takes the hook source you wrote and puts it through approval; this build's resident answers `unsupported`, so what you keep is the source itself (see the boundary below).
+8. `reverse_hook_install` — puts the hook source and the `dylibPath` built from it through approval: the resident `dlopen`s that library inside the target and calls the entry point `symbol` names. Without a `dylibPath` the resident refuses and names the build step (this resident compiles nothing).
 9. `reverse_theos_scaffold {path, packageId, bundleId, scheme}` → `reverse_theos_build {path}` — puts step 8's source into a plain Objective-C Theos project and runs the device's own `make`; the build's approval names the exact command line.
 
 <a id="security-boundary"></a>
@@ -248,8 +248,10 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 
 | Item | State |
 |---|---|
-| `hook.install` | Answers `unsupported`. Cross-process inline hooking needs a hook engine inside the target, which this build does not carry; `reverse_hook_install` still takes the source you wrote and puts it through approval, so the source in the transcript is the starting point for a Theos-built tweak |
-| `inject.dylib` | Same, `unsupported`. Load the dylib with the jailbreak's own injector or a tweak filter |
+| Injection exists but is **unverified on a device**. `RVInjector` allocates an executable stub in the target, starts a remote thread and hands it `dlopen`/entry addresses in registers; the return value lands in a slot in the target and is read back. The preconditions — that the target accepts a remote thread, that the shared cache sits at one slide across processes — have only been reasoned about from source, never observed. The failure shapes are `denied` (`thread_create_running` refused) and `timeout` (the flag never appeared, and the remote thread is terminated), neither of which touches the target's existing threads |
+| `hook.install` has no compiler | The resident compiles nothing. Without `dylibPath` it answers `unsupported` and names the build step; with one it loads and calls. **Inline hooking** (`MSHookFunction`-style rewriting of instructions already in the target) is not what this mechanism does — it needs a hook engine inside the target. The path this build offers is "load a dylib, call its entry point" |
+| Entry point of a loaded dylib | `hook.install` resolves `symbol` after loading and calls it once, reporting its `x0`; pass `symbol: "-"` when nothing should be called |
+| Readability of `inject.dylib` paths | The library must sit somewhere the jailbreak root makes readable (`/var/jb`, `/var/mobile`, …); an unreadable path answers `denied` and says to install it where the resident can open it |
 | `reverse_theos_build`'s build | Approval is the whole gate and the build is not sandboxed: a Makefile can do anything the harness user can. The success path has not run on a device that has Theos |
 | Remote Theos builds | `system.hello`'s `theos` field only reports whether Theos is visible on device; the resident does not drive a build. Compiling is `reverse_theos_build`'s job on the Node side, through `ctx.shell` and the device's own `make`; a device without one gets `theos-unavailable` |
 | `objc-method` symbols | Inferred from the file's symbol and name tables only; the target runtime's class/method lists are not read yet |

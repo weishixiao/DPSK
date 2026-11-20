@@ -68,6 +68,14 @@ export function apply(ctx: Context, config: Config): void {
         required: true,
         description: 'Complete hook source: the original declaration, your replacement function, and the MSHook* call. No includes; the resident provides them.',
       },
+      dylibPath: {
+        type: 'string',
+        required: false,
+        description:
+          'The library built from that source (reverse_theos_build output), absolute path. A hook is code '
+          + 'running inside the target and the resident has no compiler, so this is what actually gets '
+          + 'loaded. Omit it and the resident refuses, naming the build step.',
+      },
     },
     output: {
       schema: {
@@ -95,6 +103,7 @@ export function apply(ctx: Context, config: Config): void {
         symbol: args.symbol,
         mode: args.mode,
         source: args.source,
+        ...args.dylibPath === undefined ? {} : { dylibPath: args.dylibPath },
       })
       const label = await targetLabel(reverse, typed.pid, exec.signal)
       const result = await reverse.mutate('hook.install', typed, {
@@ -105,6 +114,9 @@ export function apply(ctx: Context, config: Config): void {
         summary: [
           `Hook installation in ${label}`,
           `image ${typed.image}, symbol ${typed.symbol}, mode ${typed.mode}`,
+          typed.dylibPath === undefined
+            ? 'no dylibPath: the resident will refuse until the source is built'
+            : `library ${typed.dylibPath}`,
           'source:',
           indent(elide(typed.source, SUMMARY_SOURCE_LINES)),
         ].join('\n'),

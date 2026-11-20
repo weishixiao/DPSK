@@ -68,6 +68,9 @@ const PROJECT_NAME = /^[A-Za-z0-9_]+$/
 /** Shape of a reverse-DNS package or bundle identifier. */
 const IDENTIFIER = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/
 
+/** Directories one .dylib search may open before giving up. */
+const MAX_DYLIB_SCAN = 64
+
 /** The make targets this tool runs; `install` is deliberately absent. */
 type BuildTarget = 'package' | 'do' | 'clean'
 
@@ -88,11 +91,12 @@ export function apply(ctx: Context, config: Config): void {
       name: 'reverse_theos_build',
       description:
         'Build a Theos project that is already on this device: runs make in the directory you name and '
-        + 'reports the exit status, the tail of both streams and the .deb it wrote. This runs the '
-        + 'project\'s Makefile, which is code, so the build always stops for the user\'s decision and '
-        + 'the prompt shows the exact command. Use it after reverse_theos_scaffold, or on any Theos '
-        + 'project the user points you at. It installs nothing: installing the .deb is the package '
-        + 'manager\'s job, and a hook that needs to be active now is the resident\'s.',
+        + 'reports the exit status, the tail of both streams, the .deb it wrote and the .dylib it '
+        + 'compiled. That dylib path is what reverse_hook_install takes as dylibPath, and what '
+        + 'reverse_inject_dylib loads: the resident has no compiler, so the built library is how a hook '
+        + 'reaches a running process. This runs the project\'s Makefile, which is code, so the build '
+        + 'always stops for the user\'s decision and the prompt shows the exact command. It installs '
+        + 'nothing.',
       parameters: {
         path: {
           type: 'string',
@@ -119,6 +123,7 @@ export function apply(ctx: Context, config: Config): void {
             stdout: { type: 'string', required: true },
             stderr: { type: 'string', required: true },
             package: { type: 'string' },
+            dylib: { type: 'string' },
           },
         },
         render: (_args, value) => ({
@@ -128,7 +133,10 @@ export function apply(ctx: Context, config: Config): void {
             : `make exited ${String(value.exitCode)}.`
               + (value.package === undefined
                 ? ' No .deb was written under packages/.'
-                : ` Package: ${value.package}`),
+                : ` Package: ${value.package}.`)
+              + (value.dylib === undefined
+                ? ' No .dylib was compiled under .theos/obj, so there is nothing to inject.'
+                : ` Dylib: ${value.dylib} — pass this as dylibPath to reverse_hook_install or reverse_inject_dylib.`),
         }),
       },
       async execute(args, exec) {
@@ -168,12 +176,16 @@ export function apply(ctx: Context, config: Config): void {
           )
         }
         const built = target === 'clean' ? undefined : await newestPackage(project)
+        // The .dylib, not the .deb, is what the resident loads: report it so the
+        // model can hand the path straight to reverse_hook_install.
+        const library = target === 'clean' ? undefined : await newestDylib(project)
         return {
           exitCode: result.exitCode ?? -1,
           timedOut: result.timedOut,
           stdout: result.stdout.text,
           stderr: result.stderr.text,
           ...built === undefined ? {} : { package: built },
+          ...library === undefined ? {} : { dylib: library },
         }
       },
       presentCall: args => ({
@@ -302,6 +314,41 @@ async function newestPackage(project: string): Promise<string | undefined> {
     const info = await stat(path).catch(() => undefined)
     if (info === undefined) continue
     if (newest === undefined || info.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: info.mtimeMs }
+  }
+  return newest?.path
+}
+
+/**
+ * Find the library the build most recently compiled.
+ *
+ * Theos writes it under `.theos/obj` (`obj/<Project>.dylib`, or `obj/debug/…` for a
+ * debug build), never next to the sources. It is shallow in practice, but the layout
+ * is Theos's to change, so this walks the directory instead of guessing one path.
+ * @param project - the Theos project directory.
+ * @returns the newest `.dylib` under `.theos/obj`, or undefined when the build made none.
+ */
+async function newestDylib(project: string): Promise<string | undefined> {
+  const root = join(project, '.theos', 'obj')
+  let newest: { path: string; mtimeMs: number } | undefined
+  // Bounded walk: a build tree is small, and a symlink loop must not hang the turn.
+  const pending = [root]
+  let visited = 0
+  while (pending.length > 0 && visited < MAX_DYLIB_SCAN) {
+    const directory = pending.pop()
+    if (directory === undefined) break
+    visited += 1
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        pending.push(path)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.dylib')) continue
+      const info = await stat(path).catch(() => undefined)
+      if (info === undefined) continue
+      if (newest === undefined || info.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: info.mtimeMs }
+    }
   }
   return newest?.path
 }

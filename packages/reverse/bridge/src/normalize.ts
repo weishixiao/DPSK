@@ -171,7 +171,19 @@ export function normalizeArguments<K extends ReverseOp>(op: K, raw: unknown): Re
         throw new ReverseArgsError('mode', 'must be "replace" or "log-only"')
       }
       const source = validateSource(field(args, 'source'))
-      return { pid, image, symbol, mode, source } as ReverseArg<K>
+      // Optional: the built library. When it is absent the resident refuses with a
+      // message naming the build step, which is a better answer than this side
+      // pretending the hook was installed.
+      const raw = args.dylibPath
+      const dylibPath = raw === undefined ? undefined : validateDevicePath(raw, 'dylibPath')
+      return {
+        pid,
+        image,
+        symbol,
+        mode,
+        source,
+        ...dylibPath === undefined ? {} : { dylibPath },
+      } as ReverseArg<K>
     }
     case 'inject.dylib': {
       const pid = validatePid(coercePid(field(args, 'pid')))

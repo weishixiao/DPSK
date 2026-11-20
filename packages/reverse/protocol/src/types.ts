@@ -182,6 +182,13 @@ export interface ReverseArgs {
     image: string
     symbol: string
     mode: 'replace' | 'log-only'
+    /**
+     * The built library that carries the hook. A hook is code running inside the
+     * target and the resident has no compiler, so the source has to be built first
+     * (`reverse_theos_scaffold` → `reverse_theos_build`) and loaded by path. Without
+     * it the resident refuses and says which step is missing.
+     */
+    dylibPath?: string
     /** Generated substrate source, recorded by the resident for auditing. */
     source: string
   }

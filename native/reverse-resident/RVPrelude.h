@@ -205,3 +205,53 @@ typedef id (^RVHandler)(NSDictionary *args, RVError **error);
 + (mach_port_t)taskFor:(pid_t)pid error:(RVError **)error;
 
 @end
+
+/** Getting code into a running process, and calling what is already there. */
+@interface RVInjector : NSObject
+
+/**
+ * Resolve one symbol's runtime address in a target process.
+ *
+ * A system symbol resolves through this process's own binding, because the shared
+ * cache maps at one slide per boot; anything else is read from the image's symbol
+ * table and rebased onto the target's load address.
+ * @param symbol - name, with or without the leading underscore.
+ * @param pid - target process.
+ * @param selector - image to search: install path, file name, or `base`; empty searches every image.
+ * @param error - why the lookup failed.
+ * @returns the address, or 0 with `error` set.
+ */
++ (uint64_t)addressOf:(NSString *)symbol
+            inProcess:(pid_t)pid
+                image:(NSString *)selector
+                error:(RVError **)error;
+
+/**
+ * Load one dylib into a target process by calling its own `dlopen` remotely.
+ * @param pid - target process.
+ * @param path - absolute path the resident can read.
+ * @param callerAddress - address of the entry point to call afterwards, or 0.
+ * @param error - why the library was not loaded.
+ * @returns the `inject.dylib` result record.
+ */
++ (NSDictionary *)inject:(pid_t)pid
+               dylibPath:(NSString *)path
+                  caller:(uint64_t)callerAddress
+                   error:(RVError **)error;
+
+/**
+ * Call one address in a target process with a single argument.
+ * @param pid - target process.
+ * @param address - function address as seen by the target.
+ * @param argument - value for x0.
+ * @param label - what the call is for, echoed in the result.
+ * @param error - why the call did not return.
+ * @returns `{label, returned}` where `returned` is the callee's x0 as hex.
+ */
++ (NSDictionary *)call:(pid_t)pid
+               address:(uint64_t)address
+              argument:(uint64_t)argument
+                 label:(NSString *)label
+                 error:(RVError **)error;
+
+@end
