@@ -22,10 +22,14 @@
 #      the path with an iOS precedent (nodejs-mobile ships it that way), and Xcode
 #      signs an embedded dylib for us. The dylib's install name is rewritten to
 #      `@rpath/libnode.dylib` so it loads from `DPSK.app/Frameworks/`.
-#   2. Upstream Node's `configure.py` may not accept `--dest-os=ios`. The script
-#      tries it, and on rejection falls back to `--dest-os=mac` with the iPhoneOS
-#      sysroot forced through CC/CXX — the same trick nodejs-mobile uses. A build
-#      that takes neither path is reported, not worked around silently.
+#   2. `--dest-os=ios` is accepted by Node 24's `configure.py` (it defines
+#      `V8_TARGET_OS_IOS`), and on rejection the script falls back to
+#      `--dest-os=mac`. Either way gyp still emits *macOS platform* compile
+#      lines — a macOS `-isysroot` on every object, no `-std=` — while also
+#      building host tools in the same tree. The compilers gyp is given are
+#      therefore two wrappers that pick the sysroot and the C++ standard from
+#      the output path (`obj.host/` against `obj.target/`); see
+#      `write_toolchain_wrapper`.
 #
 # Set NODE_VERSION to pin a release (default: the version in `.nvmrc`, else
 # 24.22.3). The harness requires node >= 24.9.
@@ -109,6 +113,81 @@ configure_node() {
     "$@"
 }
 
+# Node's gyp build cross-compiles through the macOS platform settings, so every
+# compile line ends with `-isysroot <MacOSX.sdk>`. That is right for the host
+# tools Node builds beside the target and wrong for the target itself, and the
+# only thing that says which is which is the output path (`obj.host/` against
+# `obj.target/`). gyp's Makefile therefore gets a wrapper as its compiler
+# instead of the real one: the wrapper drops the sysroot gyp chose, names the
+# right one, and pins the C++ standard gyp leaves out on this platform.
+write_toolchain_wrapper() {
+  local path="$1" real="$2"
+  cat > "$path" <<'WRAPPER'
+#!/bin/bash
+# Written by tooling/ios/prepare-engine.sh; regenerated on every build.
+set -eu
+real="@REAL@"
+host_sysroot="@HOST_SYSROOT@"
+target_sysroot="@TARGET_SYSROOT@"
+target_triple="@TARGET_TRIPLE@"
+
+# `obj.target` appears in the arguments of everything that becomes part of the
+# app's Node; anything else is a tool that has to run on this Mac.
+kind=host
+is_cxx=0
+for a in "$@"; do
+  case "$a" in
+    */obj.target/*) kind=target ;;
+  esac
+  case "$a" in
+    *.cc|*.cpp|*.cxx|*.mm) is_cxx=1 ;;
+  esac
+done
+
+args=()
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then
+    skip=0
+    continue
+  fi
+  case "$a" in
+    -isysroot|-target|-arch|-miphoneos-version-min|-mmacosx-version-min)
+      skip=1
+      ;;
+    -isysroot=*|-target=*|-arch=*)
+      ;;
+    *)
+      args[${#args[@]}]="$a"
+      ;;
+  esac
+done
+
+prefix=()
+if [ "$is_cxx" = 1 ]; then
+  prefix[${#prefix[@]}]="-std=gnu++20"
+fi
+if [ "$kind" = host ]; then
+  prefix[${#prefix[@]}]="-isysroot"
+  prefix[${#prefix[@]}]="$host_sysroot"
+else
+  prefix[${#prefix[@]}]="-target"
+  prefix[${#prefix[@]}]="$target_triple"
+  prefix[${#prefix[@]}]="-isysroot"
+  prefix[${#prefix[@]}]="$target_sysroot"
+fi
+
+exec "$real" "${prefix[@]}" ${args[@]+"${args[@]}"}
+WRAPPER
+  sed -i '' \
+    -e "s|@REAL@|$real|g" \
+    -e "s|@HOST_SYSROOT@|$macsdk|g" \
+    -e "s|@TARGET_SYSROOT@|$sdk|g" \
+    -e "s|@TARGET_TRIPLE@|arm64-apple-ios$ios_min|g" \
+    "$path"
+  chmod 755 "$path"
+}
+
 # A cross-build of Node fails deep inside a make log, and the run page shows
 # annotations only — one line each. The command that produced the first error,
 # and the first errors themselves, are what a reader needs; the tail of the log
@@ -149,6 +228,13 @@ stage_node() {
   host_cxx=$(xcrun --sdk macosx --find clang++)
   say "iPhoneOS SDK $(basename "$sdk"), macOS SDK $(basename "$macsdk")"
 
+  # The wrappers are generated per build and live outside the source tree, so a
+  # checkout is never dirtied by them.
+  local toolchain_dir
+  toolchain_dir=$(mktemp -d "${TMPDIR:-/tmp}/dpsk-ios-toolchain.XXXXXX")
+  write_toolchain_wrapper "$toolchain_dir/cc" "$host_cc"
+  write_toolchain_wrapper "$toolchain_dir/cxx" "$host_cxx"
+
   mkdir -p "$work_dir"
   # The tarball unpacks to a directory whose name is not simply the version
   # (and a re-run may find an older tree there): ask the tree, never guess it.
@@ -171,37 +257,14 @@ stage_node() {
 
   ( cd "$source_dir"
 
-    # Two compilers, named on both sides. gyp's make generator reads
-    # `CC_host`/`CC_target` (and the CXX/LINK twins) when cross-compiling, and
-    # `$sdk/usr/bin/clang` is not a path an iPhoneOS SDK has — the SDK carries
-    # headers and libraries, not tools. Both sides therefore use the macOS
-    # clang, and only the target side names the iPhoneOS sysroot.
-    #
-    # The sysroot travels *inside* the target command as well as in
-    # `CFLAGS_target`: Node builds its host tools (mksnapshot among them) in the
-    # same tree, and a sysroot that reaches them is a `stdio.h not found` — the
-    # host tools are ordinary macOS binaries. `CFLAGS_host` pins that side.
-    export CC_host="$host_cc"
-    export CXX_host="$host_cxx"
-    export LINK_host="$host_cxx"
-    export CFLAGS_host="-isysroot $macsdk"
-    export CXXFLAGS_host="-isysroot $macsdk"
-    export LDFLAGS_host="-isysroot $macsdk"
-    # The C++ standard is per-toolset in gyp's Makefile (`CFLAGS_CC.host`), and a
-    # cross build of Node 24 needs a C++20 compiler on both sides: the host tools
-    # compile V8's abseil, which refuses anything older than C++17.
-    export CFLAGS_C_host="-isysroot $macsdk"
-    export CFLAGS_CC_host="-std=gnu++20 -isysroot $macsdk"
-
-    local ios_flags="-target arm64-apple-ios$ios_min -isysroot $sdk"
-    export CC_target="$host_cc $ios_flags"
-    export CXX_target="$host_cxx $ios_flags"
-    export LINK_target="$host_cxx $ios_flags"
-    export CFLAGS_target="$ios_flags"
-    export CXXFLAGS_target="$ios_flags"
-    export LDFLAGS_target="$ios_flags"
-    export CFLAGS_C_target="$ios_flags"
-    export CFLAGS_CC_target="-std=gnu++20 $ios_flags"
+    # One compiler for both toolsets: the wrapper sorts each invocation out by
+    # its output path, which is the one thing gyp's Makefile gets right here.
+    export CC_host="$toolchain_dir/cc"
+    export CXX_host="$toolchain_dir/cxx"
+    export LINK_host="$toolchain_dir/cxx"
+    export CC_target="$toolchain_dir/cc"
+    export CXX_target="$toolchain_dir/cxx"
+    export LINK_target="$toolchain_dir/cxx"
 
     rm -rf out
 
