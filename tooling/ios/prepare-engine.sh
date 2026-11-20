@@ -241,6 +241,31 @@ patch_ios_deps() {
   return 0
 }
 
+# Node's own sources say `__APPLE__` wherever it means macOS, and the few places
+# where iOS disagrees are not worth a configure flag: they are carried as patch
+# files beside this script and applied to the unpacked tree. Each patch is
+# probed in both directions first, so a re-run over an already-patched tree
+# (`--node-only` twice) reports that instead of failing or applying twice.
+patch_ios_sources() {
+  local source_dir="$1" file
+  for file in "$root"/tooling/ios/patches/*.patch; do
+    [ -f "$file" ] || continue
+    # `-o /dev/null` is the dry run: patch writes the result there instead of
+    # into the tree, so a probe touches no source file. Long options are
+    # avoided — the runner's patch is BSD, whose option set is not GNU's.
+    if ( cd "$source_dir" && patch -p1 -R -f -r /dev/null -o /dev/null <"$file" >/dev/null 2>&1 ); then
+      say "already patched: $(basename "$file")"
+    elif ( cd "$source_dir" && patch -p1 -f -r /dev/null -o /dev/null <"$file" >/dev/null 2>&1 ); then
+      say "patching $(basename "$file")"
+      ( cd "$source_dir" && patch -p1 -f -r /dev/null <"$file" >/dev/null ) \
+        || fail "$(basename "$file") applied in a probe but failed for real"
+    else
+      fail "$(basename "$file") applies to neither the source tree nor a patched one — does Node $node_version still match it?"
+    fi
+  done
+  return 0
+}
+
 stage_node() {
   say "building Node $node_version for iOS arm64"
   command -v xcrun >/dev/null || fail "xcrun is missing — this step needs Xcode"
@@ -291,6 +316,7 @@ stage_node() {
     export LINK_target="$toolchain_dir/cxx"
 
     patch_ios_deps "$source_dir"
+    patch_ios_sources "$source_dir"
 
     rm -rf out
 

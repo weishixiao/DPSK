@@ -1,0 +1,61 @@
+Node's certificate trust code against iOS.
+
+`src/crypto/crypto_context.cc` reads the macOS keychain and interprets macOS
+trust settings: `SecTrustSettingsCopyTrustSettings` plus the
+`kSecTrustSettings*` dictionary keys. The iPhoneOS SDK declares none of the
+`kSecTrustSettings*` constants, so a target compile stops with "use of
+undeclared identifier" — and even with declarations, an app sandbox has no
+user trust-settings domain to read.
+
+The patch puts the whole block, and the one call into it, behind
+`!defined(V8_TARGET_OS_IOS)`. That macro is the cross-build's own statement
+that an object is for iOS: `tooling/ios/prepare-engine.sh` defines it, with
+`V8_HAVE_TARGET_OS`, for everything compiled into `obj.target/`. The macOS
+host tools in the same tree keep the macOS code path.
+
+With the keychain read compiled out, `InitializeSystemStoreCertificates()` on
+iOS loads the OpenSSL default paths instead (usually empty on a phone, which
+leaves the bundled Mozilla roots — what `--use-bundled-ca` uses anyway).
+
+--- a/src/crypto/crypto_context.cc
++++ b/src/crypto/crypto_context.cc
+@@ -338,7 +338,15 @@
+ // Licensed under a BSD-style license
+ // See https://chromium.googlesource.com/chromium/src/+/HEAD/LICENSE for
+ // details.
++//
++// iOS: SecTrustSettings and its dictionary keys (kSecTrustSettingsPolicy,
++// kSecTrustSettingsResult, kSecTrustSettingsDomain*) are macOS-only — the
++// iPhoneOS SDK declares none of them — so this block and the keychain read
++// that calls it compile on macOS only. `V8_TARGET_OS_IOS` is what the
++// cross-build's compiler wrapper defines for target objects; see
++// tooling/ios/prepare-engine.sh.
+ #ifdef __APPLE__
++#if !defined(V8_TARGET_OS_IOS)
+ TrustStatus IsTrustDictionaryTrustedForPolicy(CFDictionaryRef trust_dict,
+                                               bool is_self_issued) {
+   // Trust settings may be scoped to a single application
+@@ -640,6 +648,7 @@
+   }
+   CFRelease(curr_anchors);
+ }
++#endif  // !V8_TARGET_OS_IOS
+ #endif  // __APPLE__
+ 
+ #ifdef _WIN32
+@@ -908,13 +917,13 @@
+ 
+ static std::vector<X509*> InitializeSystemStoreCertificates() {
+   std::vector<X509*> system_store_certs;
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(V8_TARGET_OS_IOS)
+   ReadMacOSKeychainCertificates(&system_store_certs);
+ #endif
+ #ifdef _WIN32
+   ReadWindowsCertificates(&system_store_certs);
+ #endif
+-#if !defined(__APPLE__) && !defined(_WIN32)
++#if !defined(_WIN32) && (!defined(__APPLE__) || defined(V8_TARGET_OS_IOS))
+   GetOpenSSLSystemCertificates(&system_store_certs);
+ #endif
+   return system_store_certs;
