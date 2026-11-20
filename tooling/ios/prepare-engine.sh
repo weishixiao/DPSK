@@ -37,7 +37,7 @@ root=$(pwd -P)
 
 engine_dir="$root/app/ios/Engine"
 vendor_dir="$root/app/ios/Vendor/node"
-work_dir="$root/app/ios/Vendor/node/src"
+work_dir="${NODE_BUILD_DIR:-$root/app/ios/Vendor/node/src}"
 node_version="${NODE_VERSION:-24.22.3}"
 ios_min="16.0"
 jobs=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)

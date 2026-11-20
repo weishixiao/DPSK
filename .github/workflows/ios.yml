@@ -22,14 +22,60 @@ permissions:
   contents: read
 
 jobs:
+  # What the device build links and serves. Both halves are reproducible from
+  # prepare-engine.sh, so they are cached under a key that moves when the script
+  # or the lockfile moves; the unpacked Node source tree and its objects stay in
+  # the runner's temp directory and are never cached.
+  engine:
+    name: engine (Node for iOS, harness)
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      NODE_BUILD_DIR: ${{ runner.temp }}/node-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v5.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Restore a staged engine
+        id: staged
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/ios/Vendor
+            app/ios/Engine/runtime
+          key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
+      - name: Build Node for iOS and deploy the harness
+        if: steps.staged.outputs.cache-hit != 'true'
+        run: tooling/ios/prepare-engine.sh
+      - name: Keep the configure log of a failed cross-build
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-configure-log
+          path: ${{ runner.temp }}/node-build/configure-ios.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   ipa:
     name: unsigned ipa
+    needs: engine
     runs-on: macos-15
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Install xcodegen
         run: brew install xcodegen
+      - name: Restore the staged engine
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/ios/Vendor
+            app/ios/Engine/runtime
+          key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
+          fail-on-cache-miss: true
       - name: Build unsigned ipa
         run: tooling/ios/build.sh iphoneos "$RUNNER_TEMP/ipa"
       - name: Upload the ipa
