@@ -145,6 +145,15 @@ private struct SettingsSheet: View {
                     ForEach(LaunchMode.allCases) { candidate in
                         modeRow(candidate)
                     }
+                    if model.engineAvailable {
+                        // The engine logs where the sandbox lets it write; saying
+                        // where saves guessing when a boot does not come up.
+                        Text(model.engineLogPath)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
                 }
 
                 Spacer(minLength: 0)

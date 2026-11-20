@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  JIT for the embedded V8. Without this entitlement V8 falls back to
+	  --jitless (EngineRuntime decides that at run time by reading this same
+	  entitlement), which boots and serves but interprets everything.
+
+	  A sideload signature (Sideloadly, AltStore, eSign with a free Apple ID)
+	  cannot grant it: the tool re-signs the app and drops entitlements the
+	  profile does not carry. Keep the key here so an entitled signer —
+	  a paid account's provisioning profile with `com.apple.developer.networking
+	  .multipath` style extras is not enough; the JIT entitlement needs an
+	  entitlement-bearing profile — gets JIT without an edit. The key is
+	  harmless when it is not granted: the check is at run time.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

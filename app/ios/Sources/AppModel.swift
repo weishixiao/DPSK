@@ -22,6 +22,9 @@ final class AppModel: ObservableObject {
     /// True only when this build carries a packed Node runtime.
     var engineAvailable: Bool { runtime != nil }
 
+    /// Where the engine writes its log, for the settings screen to name.
+    var engineLogPath: String { EnginePaths.logs.appendingPathComponent("engine.log").path }
+
     init() {
         settings = store.load()
     }
@@ -42,14 +45,19 @@ final class AppModel: ObservableObject {
 
     private func startEngine() {
         guard let runtime else {
-            phase = .failed("这个包里没有本机引擎。改用远程主机，或先按 app/ios/README.zh.md 准备引擎再重新构建。")
+            phase = .failed("这个包里没有本机引擎。先跑 tooling/ios/prepare-engine.sh 再重新构建，或改用远程主机（见 app/ios/Engine/README.md）。")
             return
         }
         phase = .connecting
-        do {
-            phase = .ready(try runtime.start())
-        } catch {
-            phase = .failed(error.localizedDescription)
+        // Booting Node waits for the loopback port, so the work is off the main
+        // actor while the window shows what is happening.
+        Task {
+            do {
+                let url = try await runtime.start()
+                phase = .ready(url)
+            } catch {
+                phase = .failed(error.localizedDescription)
+            }
         }
     }
 

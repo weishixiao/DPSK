@@ -6,6 +6,14 @@
 #
 # Bundle id: change `PRODUCT_BUNDLE_IDENTIFIER` below (one place) before the first
 # signed build — a free Apple ID needs an id nothing else on the App Store holds.
+#
+# Node: the engine is linked in as an embedded `Frameworks/libnode.dylib`, not
+# bundled as a framework of its own. `tooling/ios/prepare-engine.sh` puts the iOS
+# build of Node at `Vendor/node/` (headers under `include/node`, the arm64
+# iPhoneOS `libnode.dylib`) and the JavaScript side at `Engine/`. Until it has
+# run, a device build does not link: the linker needs -lnode. That is deliberate
+# — a build that silently shipped without the engine would boot an app whose only
+# mode is a remote host.
 name: DPSK
 
 options:
@@ -30,8 +38,9 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - path: Sources
-      # The packed Node runtime, when `tooling/ios/prepare-engine.sh` has put one
-      # here. It is copied in as a folder so the app finds it by name at run time.
+      # The JavaScript side of the engine, when `tooling/ios/prepare-engine.sh`
+      # has put one here. It is copied in as a folder so the app finds it by
+      # name at run time.
       - path: Engine
         type: folder
         buildPhase: resources
@@ -59,8 +68,51 @@ targets:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: DPSK 连接局域网内的 harness 主机。
+        # The embedded Node engine listens on 127.0.0.1; loopback needs no
+        # permission, but the WebTweakView content loads over http, which
+        # NSAllowsLocalNetworking above already covers.
+        # V8 runs JIT only when the signature carries `com.apple.security.cs.
+        # allow-jit` (DPSK.entitlements). A sideloaded signature drops it, so the
+        # default is interpretation; an entitled build sets this to true.
+        DPSKEngineJIT: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dpsk.harness
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        CODE_SIGN_ENTITLEMENTS: DPSK.entitlements
+        # Swift sees the node bridge through this header.
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge.h
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
+        GCC_ENABLE_CPP_EXCEPTIONS: YES
+        GCC_ENABLE_CPP_RTTI: YES
+        # Node's public headers, staged by prepare-engine.sh.
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/Vendor/node/include/node
+        LIBRARY_SEARCH_PATHS:
+          - $(SRCROOT)/Vendor/node/lib
+        # libnode is a dylib so Xcode signs it with the app (a static archive
+        # would need `-force_load` and duplicate Node's embedded deps). The
+        # install name is rewritten to @rpath/libnode.dylib by prepare-engine.sh;
+        # this is where that rpath resolves from.
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/Frameworks"
+        # `-lz` is the system zlib, `-lc++` the C++ runtime Node was built with,
+        # `-lsqlite3` the system SQLite the session store links against. ICU is
+        # linked statically inside libnode (small-icu), so no -licucore here.
+        OTHER_LDFLAGS:
+          - -lnode
+          - -lz
+          - -lc++
+          - -lsqlite3
+          - -lresolv
+# The Node runtime itself is device-only (arm64 iPhoneOS); the simulator cannot
+# link it, so build.sh generates its simulator check from a copy of this file with
+# the block below removed and runs the Swift/ObjC sources alone.
+# yaml-remove-start: node-runtime-dependency
+    dependencies:
+      - framework: Vendor/node/lib/libnode.dylib
+        embed: true
+        codeSign: true
+# yaml-remove-end: node-runtime-dependency

@@ -4,8 +4,9 @@ import Foundation
 enum LaunchMode: String, Codable, CaseIterable, Identifiable {
     /// A `dsh web` host somewhere the device can reach.
     case remote
-    /// A Node runtime packed into this app. Stage two: the target links no such
-    /// runtime yet, so choosing it reports why instead of pretending to start.
+    /// A Node runtime packed into this app: `Engine/host.mjs` plus the embedded
+    /// `libnode.dylib`. Choosing it when the engine was never staged reports why
+    /// instead of pretending to start.
     case engine
 
     var id: String { rawValue }

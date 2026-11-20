@@ -46,6 +46,10 @@ apps/cli/docs/
 app/ios/DPSK.xcodeproj/
 app/ios/Sources/Info.plist
 .dpsk-ios/
+# prepare-engine.sh downloads and cross-builds Node, then deploys the harness:
+# hundreds of megabytes of build output, reproducible from the script.
+app/ios/Vendor/
+app/ios/Engine/runtime/
 .ui-review/
 .playwright-mcp/
 .orig

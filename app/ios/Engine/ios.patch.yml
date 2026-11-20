@@ -1,0 +1,91 @@
+# Loader overlay for the in-app engine: what a phone cannot run.
+#
+# `host.mjs` passes this to `dsh web --patch`, so it applies after the `web`
+# bundle's own patch and after the `presets/` files. Two limits shape what it can
+# say:
+#
+#   1. It reaches HOST-plane rows only. The model-facing tools (`tool-bash`,
+#      `tool-fs`, …) are disabled at the host plane by the web bundle and mounted
+#      again inside each agent preset, so a row named here cannot remove them.
+#      See "open item: preset rows" at the bottom.
+#   2. A patch replaces the targeted row's whole `config`, and disabling a row
+#      whose service another row injects fails that other row at mount. So this
+#      file disables only rows nothing else injects (`openInApp`, `skillOffice`,
+#      `terminalController` have no injectors in this profile), and it leaves the
+#      process/sandbox providers (`subprocess`, `sandbox`, `sandbox-policy`)
+#      alone: `tool-fs-search`, `workspace-changes`, `terminal-bash` and the PTC
+#      runtime all inject them, and they fail per call on iOS rather than at load.
+
+# ── desktop-only conveniences ────────────────────────────────────────────────
+
+# Opens a file in another installed application. The probe enumerates Linux and
+# macOS application databases, and a web page inside a WKWebView has no such
+# channel anyway. Nothing injects `openInApp`.
+- id: open-in-app
+  disabled: true
+
+- id: ui-open-in-app
+  disabled: true
+
+# Office skills direct the model at a Python environment; the app ships no
+# interpreter. `office-kit` itself stays ENABLED on purpose: the `standard` and
+# `ptc` presets mount `tool-office`, which injects `officeKit`, and disabling the
+# provider would fail that preset row at mount. A conversion call fails on its
+# own, which is loud enough.
+- id: skill-office
+  disabled: true
+
+# ── terminals ────────────────────────────────────────────────────────────────
+#
+# No PTY and no fork/exec inside a sandboxed app. Both rows go together: the
+# client row is the only consumer of the `terminalController` Remote.
+#
+# This pairs with pinning the `standard` preset, which mounts no `terminal-*`
+# row. The `minimal` preset does, and its rows inject `terminals`; with this
+# overlay and `minimal` together, those preset rows fail at mount.
+
+- id: terminal-controller
+  disabled: true
+
+- id: ui-sidebar-terminal
+  disabled: true
+
+# ── directory picker ─────────────────────────────────────────────────────────
+#
+# The shipped `-auto` row resolves to the native OS chooser on a loopback bind,
+# an interaction a WKWebView cannot drive. Pin the in-page browser instead —
+# byte for byte the overlay the repository's own web smoke uses
+# (`apps/web/tests/pin-browse-picker.overlay.yml`).
+
+- id: directory-picker
+  disabled: true
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+
+# ── deliberately NOT here ────────────────────────────────────────────────────
+#
+# `sandbox`, `bash-sandbox`, `pwsh-sandbox`, `subprocess`: providers other rows
+# inject. Their iOS failure is a `spawnSync`/`spawn` error, which the codebase
+# already treats as "probe unusable" or a per-call error — disabling them would
+# instead break `tool-fs-search`, `workspace-changes`, `terminal-bash` and the
+# PTC runtime at mount.
+#
+# `workspace-dependencies`, `desktop-product-telemetry`, `product-analytics`:
+# already gated to the desktop profile by the web bundle, so a second disable
+# here would only restate it — and would drop the config the desktop build uses.
+#
+# ── open item: preset rows ──────────────────────────────────────────────────
+#
+# Every shipped preset (`minimal`, `standard`, `cordis`, `ptc`) mounts
+# `tool-bash` and `tool-pwsh`, and `minimal` mounts the `terminal-*` family. Those
+# rows are in the preset's own scope, so this overlay cannot disable them: the
+# model still sees a `bash` tool on the phone, and calling it fails with a spawn
+# error. Fixing that properly means an iOS preset in the web bundle's
+# `presets/` (a product change in `packages/`), or a preset selection flag the
+# CLI does not have today. Until then the failure is loud per call, not silent.
+#
+# Session persistence is a packaging gap, not a patch row: see
+# app/ios/Engine/README.md.

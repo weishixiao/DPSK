@@ -30,7 +30,29 @@ command -v xcodegen >/dev/null 2>&1 || {
 
 mkdir -p "$out"
 cd "$app"
-xcodegen generate --spec project.yml
+
+if [ "$sdk" = iphoneos ]; then
+  # A device archive links Node and embeds it; without the staged runtime the
+  # failure would be a link error far from its cause.
+  [ -f Vendor/node/lib/libnode.dylib ] || {
+    echo "build.sh: Vendor/node/lib/libnode.dylib is missing — run tooling/ios/prepare-engine.sh" >&2
+    exit 1
+  }
+  [ -f Engine/runtime/harness/lib/bin.js ] || {
+    echo "build.sh: Engine/runtime/harness is empty — run tooling/ios/prepare-engine.sh" >&2
+    exit 1
+  }
+  spec=project.yml
+else
+  # The simulator has no arm64-iPhoneOS libnode to link, so this run is a compile
+  # check of the Swift and ObjC sources: same spec minus the dependency block.
+  mkdir -p "$work"
+  sed '/# yaml-remove-start: node-runtime-dependency/,/# yaml-remove-end: node-runtime-dependency/d' \
+    project.yml > "$work/project.simulator.yml"
+  spec="$work/project.simulator.yml"
+fi
+
+xcodegen generate --spec "$spec"
 
 if [ "$sdk" = iphonesimulator ]; then
   destination="generic/platform=iOS Simulator"
