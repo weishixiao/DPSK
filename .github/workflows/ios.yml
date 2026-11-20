@@ -49,15 +49,21 @@ jobs:
         if: steps.staged.outputs.cache-hit != 'true'
         env:
           NODE_BUILD_DIR: ${{ runner.temp }}/node-build
-        run: tooling/ios/prepare-engine.sh
-      - name: Keep the configure log of a failed cross-build
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: engine-configure-log
-          path: ${{ runner.temp }}/node-build/configure-ios.log
-          if-no-files-found: ignore
-          retention-days: 7
+        run: |
+          set -o pipefail
+          tooling/ios/prepare-engine.sh 2>&1 | tee "$RUNNER_TEMP/engine.log"
+      # The job log needs a sign-in to read; the step summary is on the run page
+      # for anyone. An unproven cross-build fails for reasons the last screenful
+      # of output names.
+      - name: Leave the tail of a failed build on the run page
+        if: failure() && steps.staged.outputs.cache-hit != 'true'
+        run: |
+          {
+            echo '### the engine build failed'
+            echo '```'
+            tail -n 80 "$RUNNER_TEMP/engine.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   ipa:
     name: unsigned ipa
