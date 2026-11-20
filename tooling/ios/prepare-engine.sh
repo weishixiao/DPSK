@@ -119,14 +119,25 @@ stage_node() {
   host_cc=$(xcrun --sdk macosx --find clang)
 
   mkdir -p "$work_dir"
-  if [ ! -d "$work_dir/node-$node_version" ]; then
+  # The tarball unpacks to a directory whose name is not simply the version
+  # (and a re-run may find an older tree there): ask the tree, never guess it.
+  node_source() {
+    find "$work_dir" -maxdepth 1 -type d -name 'node-*' \
+      -exec test -f '{}/configure' \; -print 2>/dev/null | head -n 1
+  }
+
+  local source_dir
+  source_dir=$(node_source)
+  if [ -z "$source_dir" ]; then
     local tarball="$work_dir/node-v$node_version.tar.gz"
     [ -f "$tarball" ] || curl -fL --retry 3 -o "$tarball" \
       "https://nodejs.org/dist/v$node_version/node-v$node_version.tar.gz"
     tar -xzf "$tarball" -C "$work_dir"
+    source_dir=$(node_source)
   fi
+  [ -n "$source_dir" ] || fail "the Node tarball unpacked to no source tree in $work_dir"
+  say "source tree: $(basename "$source_dir")"
 
-  local source_dir="$work_dir/node-$node_version"
   ( cd "$source_dir"
 
     export CC_target="$sdk/usr/bin/clang"
