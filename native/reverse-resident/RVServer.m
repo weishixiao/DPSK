@@ -99,6 +99,7 @@ static NSArray<NSString *> *RVServedOps(void) {
   dispatch_once(&once, ^{
     ops = @[
       @"system.hello",
+      @"system.logs",
       @"process.list",
       @"process.images",
       @"process.symbols",
@@ -125,6 +126,99 @@ static BOOL RVTheosAvailable(void) {
   }
   return NO;
 }
+
+#pragma mark - Log ring
+
+/**
+ * Answered requests, newest last, in a bounded ring.
+ *
+ * The panel exists so a session can be explained after the fact — which operation
+ * ran, whether the resident refused it, and what it said — so an entry is written
+ * for every answer the dispatcher produces, including the refusals. Requests that
+ * arrive malformed enough to have no operation name are not logged: there is
+ * nothing to name.
+ */
+@interface RVLogRing : NSObject
++ (instancetype)shared;
+/** Append one answer; the oldest entry is dropped when the ring is full. */
+- (void)recordOperation:(NSString *)operation
+                     ok:(BOOL)ok
+              elapsedMs:(NSInteger)elapsedMs
+                 detail:(NSString *)detail;
+/** The newest `limit` entries, oldest first, with how many were dropped for good. */
+- (NSDictionary *)entriesWithLimit:(NSUInteger)limit;
+@end
+
+/** ISO-8601 in UTC with milliseconds: a log the panel shows is a moment, not a locale. */
+static NSString *RVTimestamp(void) {
+  static NSDateFormatter *formatter;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSDateFormatter *made = [[NSDateFormatter alloc] init];
+    made.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+    made.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+    made.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter = made;
+  });
+  return [formatter stringFromDate:[NSDate date]];
+}
+
+@implementation RVLogRing {
+  NSMutableArray<NSDictionary *> *_entries;
+  NSUInteger _dropped;
+}
+
++ (instancetype)shared {
+  static RVLogRing *ring;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ ring = [[RVLogRing alloc] init]; });
+  return ring;
+}
+
+- (instancetype)init {
+  if ((self = [super init])) {
+    _entries = [NSMutableArray arrayWithCapacity:RV_MAX_LOG_ENTRIES];
+    _dropped = 0;
+  }
+  return self;
+}
+
+- (void)recordOperation:(NSString *)operation
+                     ok:(BOOL)ok
+              elapsedMs:(NSInteger)elapsedMs
+                 detail:(NSString *)detail {
+  // Two clients answer concurrently, so the ring and the date formatter behind
+  // RVTimestamp() are both read and written under this one lock.
+  @synchronized (self) {
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"at"] = RVTimestamp();
+    entry[@"op"] = operation.length > 0 ? operation : @"-";
+    entry[@"ok"] = @(ok);
+    entry[@"elapsedMs"] = @(elapsedMs);
+    NSString *text = detail;
+    if (text.length > RV_MAX_LOG_DETAIL) {
+      // Cut on a character boundary so a multi-byte character is never halved.
+      NSRange range = [text rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, RV_MAX_LOG_DETAIL)];
+      text = [text substringWithRange:range];
+    }
+    if (text.length > 0) entry[@"detail"] = text;
+    if (_entries.count >= RV_MAX_LOG_ENTRIES) {
+      [_entries removeObjectAtIndex:0];
+      _dropped += 1;
+    }
+    [_entries addObject:entry];
+  }
+}
+
+- (NSDictionary *)entriesWithLimit:(NSUInteger)limit {
+  @synchronized (self) {
+    NSUInteger wanted = MIN(limit, _entries.count);
+    NSArray<NSDictionary *> *slice = [_entries subarrayWithRange:NSMakeRange(_entries.count - wanted, wanted)];
+    return @{ @"entries": slice, @"dropped": @(_dropped) };
+  }
+}
+
+@end
 
 #pragma mark - Server
 
@@ -173,6 +267,19 @@ static NSData *RVFrame(NSString *identifier, id result, RVError *error, NSDate *
       @"theos": @(RVTheosAvailable()),
       @"ops": RVServedOps(),
     };
+  };
+
+  table[@"system.logs"] = ^id(NSDictionary *args, RVError **error) {
+    long long limit = 50;
+    if (args[@"limit"] != nil && !RVInteger(args, @"limit", &limit, error)) return nil;
+    if (limit < 1 || limit > (long long)RV_MAX_LOG_ENTRIES) {
+      if (error != NULL) {
+        *error = [RVError errorWithCode:RVCodeInvalidArgs
+                                message:[NSString stringWithFormat:@"limit must be 1..%u", RV_MAX_LOG_ENTRIES]];
+      }
+      return nil;
+    }
+    return [[RVLogRing shared] entriesWithLimit:(NSUInteger)limit];
   };
 
   table[@"process.list"] = ^id(NSDictionary *args, RVError **error) {
@@ -434,11 +541,22 @@ static NSData *RVAnswerLine(RVServer *server, NSString *line) {
     return RVFrame(identifier, nil, [RVError errorWithCode:RVCodeBadRequest message:@"request needs an id and an op"], started);
   }
 
+  // Every answer from here on is logged, a refusal included: the panel's job is to
+  // say what the resident was asked and what it said back.
+  NSData *(^finish)(id, RVError *) = ^NSData *(id result, RVError *failure) {
+    NSInteger elapsed = (NSInteger)(-[started timeIntervalSinceNow] * 1000.0);
+    NSString *detail = failure == nil
+      ? nil
+      : [NSString stringWithFormat:@"%@: %@", failure.code, failure.message];
+    [[RVLogRing shared] recordOperation:operation ok:(failure == nil) elapsedMs:elapsed detail:detail];
+    return RVFrame(identifier, result, failure, started);
+  };
+
   RVOperation handler = server.operations[operation];
   if (handler == nil) {
     RVError *unknown = [RVError errorWithCode:RVCodeUnsupported
                                       message:[NSString stringWithFormat:@"the resident does not serve %@", operation]];
-    return RVFrame(identifier, nil, unknown, started);
+    return finish(nil, unknown);
   }
 
   RVError *error = nil;
@@ -454,20 +572,17 @@ static NSData *RVAnswerLine(RVServer *server, NSString *line) {
                  operation.UTF8String,
                  caught.name.UTF8String ?: "exception",
                  caught.reason.UTF8String ?: "");
-    return RVFrame(identifier,
-                   nil,
-                   [RVError errorWithCode:RVCodeRemoteError
-                                   message:[NSString stringWithFormat:@"the resident raised %@ while serving %@: %@",
-                                            caught.name ?: @"an exception",
-                                            operation,
-                                            caught.reason ?: @"no reason given"]],
-                   started);
+    return finish(nil, [RVError errorWithCode:RVCodeRemoteError
+                                       message:[NSString stringWithFormat:@"the resident raised %@ while serving %@: %@",
+                                                caught.name ?: @"an exception",
+                                                operation,
+                                                caught.reason ?: @"no reason given"]]);
   }
   if (error != nil || result == nil) {
     RVError *failure = error ?: [RVError errorWithCode:RVCodeRemoteError message:@"operation produced no result"];
-    return RVFrame(identifier, nil, failure, started);
+    return finish(nil, failure);
   }
-  return RVFrame(identifier, result, nil, started);
+  return finish(result, nil);
 }
 
 /** Assemble one response frame. */

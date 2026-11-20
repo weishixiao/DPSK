@@ -26,7 +26,7 @@ reverse 组让一个组合能够读取所运行越狱设备上的进程与内存
 |---|---|---|
 | [`protocol/`](protocol/README.md) | 操作表、帧、错误码、参数校验、按行分帧 | — |
 | [`bridge/`](bridge/README.md) | 定义 `ctx.reverse` 并经常驻端的 Unix 套接字提供服务，凡是会改变目标的操作先征询审批 | `ctx.reverse` |
-| [`tool-process/`](tool-process/README.md) | `reverse_status`、`reverse_process_list`、`reverse_process_images` | 注册工具 |
+| [`tool-process/`](tool-process/README.md) | `reverse_status`、`reverse_logs`、`reverse_process_list`、`reverse_process_images` | 注册工具 |
 | [`tool-macho/`](tool-macho/README.md) | `reverse_macho_analyze`：加载命令、段与节、依赖、加密标志、名称、字符串 | 注册工具 |
 | [`tool-symbol/`](tool-symbol/README.md) | `reverse_symbols`：从目标映像的符号表取运行时地址 | 注册工具 |
 | [`tool-memory/`](tool-memory/README.md) | `reverse_memory_read`、`reverse_memory_scan`，以及需要审批的 `reverse_memory_write` | 注册工具 |

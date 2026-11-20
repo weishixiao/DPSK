@@ -35,6 +35,12 @@ export const DEFAULT_SYMBOL_LIMIT = 200
 /** Default cap on strings returned by one Mach-O analysis. */
 export const DEFAULT_STRING_LIMIT = 200
 
+/** Default and highest number of log entries one panel call reads. */
+export const DEFAULT_LOG_LIMIT = 50
+
+/** Highest number of log entries a caller may ask for in one call. */
+export const MAX_LOG_LIMIT = 200
+
 /** Lowest and highest value of each integer width, as the resident parses them. */
 const SCAN_LIMIT = 500
 
@@ -103,6 +109,10 @@ export function normalizeArguments<K extends ReverseOp>(op: K, raw: unknown): Re
   switch (op) {
     case 'system.hello':
       return {} as ReverseArg<K>
+    case 'system.logs': {
+      const limit = validateLimit(field(args, 'limit'), DEFAULT_LOG_LIMIT, MAX_LOG_LIMIT, 'limit')
+      return { limit } as ReverseArg<K>
+    }
     case 'process.list': {
       const filter = validateProcessFilter(field(args, 'filter'))
       return { ...filter === undefined ? {} : { filter } } as ReverseArg<K>

@@ -32,6 +32,7 @@ THEOS=/opt/theos THEOS_PACKAGE_SCHEME=roothide make package
 | 操作 | 状态 |
 |---|---|
 | `system.hello` | 回答协议版本与操作列表 |
+| `system.logs` | 最近 200 条应答的环形日志：时刻（UTC ISO-8601）、操作名、成败、耗时、失败文本 |
 | `process.list`、`process.images` | `proc_listpids`，再沿目标自己的 `vm_region_recurse` 找 Mach-O 头 |
 | `process.symbols` | 映像文件的 `LC_SYMTAB` 与导出名，按该映像在目标中的加载基址重定位 |
 | `macho.analyze` | 磁盘文件：加载命令、段与节、依赖 dylib、加密标志、字符串 |
@@ -45,5 +46,6 @@ THEOS=/opt/theos THEOS_PACKAGE_SCHEME=roothide make package
 
 - 套接字建在 `0700` 目录里、权限 `0600`：只有 `mobile`（与 `root`）能连。能连上它就能写别的进程的内存——把它当作等价于 root 的能力对待。
 - `memory.write` 即使写失败也恢复原保护，并报告写入前的值。
+- 日志环形缓冲只在内存里：respring 后清零，超过 200 条的旧条目被丢弃，`dropped` 如实报告丢弃数；写入与读取都在同一把 `@synchronized` 锁里，两个客户端并发应答也不会交错。
 - 读与扫受 `RV_MAX_FRAME_BYTES`（8 MiB）与 `RV_MAX_READ_LENGTH`（1 MiB）限制；客户端先验证同一组限制，所以被拒的请求在到达设备前就失败。
 - 四个操作文件在 iOS 18.5 SDK 上以 `-Wall -Wextra` 干净编译并链接；`Tweak.xm` 另需 Logos 与 `libsubstrate`，只有 Theos 工具链提供。

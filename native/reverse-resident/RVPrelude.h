@@ -82,6 +82,12 @@ extern kern_return_t mach_vm_write(vm_map_t target_task,
 /** Bytes one `memory.read` may ask for. */
 #define RV_MAX_READ_LENGTH (1024u * 1024u)
 
+/** Answered requests the resident keeps for `system.logs`; older ones are dropped. */
+#define RV_MAX_LOG_ENTRIES (200u)
+
+/** Longest failure text one log entry carries before it is cut. */
+#define RV_MAX_LOG_DETAIL (400u)
+
 /** Socket the resident listens on, inside the jailbreak-writable data container. */
 FOUNDATION_EXPORT NSString *const RVSocketPath;
 

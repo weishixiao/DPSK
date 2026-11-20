@@ -17,8 +17,10 @@ export type {
 export { Config, LocalSocketReverseBridge } from './local-socket.ts'
 export type { Config as ReverseBridgeConfig } from './local-socket.ts'
 export {
+  DEFAULT_LOG_LIMIT,
   DEFAULT_STRING_LIMIT,
   DEFAULT_SYMBOL_LIMIT,
+  MAX_LOG_LIMIT,
   normalizeArguments,
 } from './normalize.ts'
 export { LocalSocketReverseBridge as default } from './local-socket.ts'

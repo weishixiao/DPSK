@@ -26,7 +26,7 @@ The reverse group gives a composition read access to processes and memory on the
 |---|---|---|
 | [`protocol/`](protocol/README.md) | Operation table, frames, error codes, argument validation, line framing | — |
 | [`bridge/`](bridge/README.md) | Defines `ctx.reverse` and serves it over the resident's Unix socket, asking approval before anything that changes the target | `ctx.reverse` |
-| [`tool-process/`](tool-process/README.md) | `reverse_status`, `reverse_process_list`, `reverse_process_images` | registers tools |
+| [`tool-process/`](tool-process/README.md) | `reverse_status`, `reverse_logs`, `reverse_process_list`, `reverse_process_images` | registers tools |
 | [`tool-macho/`](tool-macho/README.md) | `reverse_macho_analyze`: load commands, sections, dependencies, encryption, names, strings | registers tools |
 | [`tool-symbol/`](tool-symbol/README.md) | `reverse_symbols`: runtime addresses from a target's image symbol tables | registers tools |
 | [`tool-memory/`](tool-memory/README.md) | `reverse_memory_read`, `reverse_memory_scan`, and the approved `reverse_memory_write` | registers tools |

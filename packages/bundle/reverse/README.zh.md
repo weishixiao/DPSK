@@ -58,13 +58,13 @@ dsh:
 <a id="model-experience"></a>
 ## 模型体验
 
-模型看到六个名为 `reverse_*` 的工具。读取类（`reverse_status`、`reverse_process_list`、`reverse_process_images`、`reverse_macho_analyze`、`reverse_symbols`、`reverse_memory_read`、`reverse_memory_scan`）不需要询问即可运行；`reverse_memory_write`、`reverse_hook_install`、`reverse_inject_dylib` 各自需要在打开的 turn 内点一次"允许一次"，提示里写明进程、地址与值。失败以协议的稳定错误码返回（`not-connected`、`denied`、`unsupported`），模型因此能区分"常驻端没装"与"`task_for_pid` 被拒"。
+模型看到十五个名为 `reverse_*` 的工具。读取类（`reverse_status`、`reverse_logs`、`reverse_process_list`、`reverse_process_images`、`reverse_macho_analyze`、`reverse_symbols`、`reverse_memory_read`、`reverse_memory_scan`）不需要询问即可运行；`reverse_memory_write`、`reverse_hook_install`、`reverse_inject_dylib` 各自需要在打开的 turn 内点一次"允许一次"，提示里写明进程、地址与值。失败以协议的稳定错误码返回（`not-connected`、`denied`、`unsupported`），模型因此能区分"常驻端没装"与"`task_for_pid` 被拒"。
 
 <a id="known-limitations-and-deferred-work"></a>
 ## 已知限制与后续工作
 
 - `reverse_hook_install` 与 `reverse_inject_dylib` 由常驻端回答 `unsupported`：本构建尚未实现跨进程 hook 与注入。tweak 工具仍会生成并保存 Substrate 源码，那是受支持的路径。
-- 本 bundle 没有逐能力开关。只有工具而没有桥的组合会对每次调用报配置错误，比能力整体不存在更糟。
+- 开关粒度是"整个包"，不是单个工具：一行 `config: { enabled: false }` 关掉该包带来的全部工具（例如 `tool-reverse-process` 的四个），没有更细的开关。
 
 ## 开发备注
 

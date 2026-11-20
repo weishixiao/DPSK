@@ -58,13 +58,13 @@ The bundle is a patch of `insert` rows only; it rewrites no row of the layers be
 <a id="model-experience"></a>
 ## Model Experience
 
-The model sees six tools named `reverse_*`. Reads (`reverse_status`, `reverse_process_list`, `reverse_process_images`, `reverse_macho_analyze`, `reverse_symbols`, `reverse_memory_read`, `reverse_memory_scan`) run without asking; `reverse_memory_write`, `reverse_hook_install` and `reverse_inject_dylib` each require one "allow once" inside the open turn, with a summary naming the process, address and value. Failures come back as the protocol's stable codes (`not-connected`, `denied`, `unsupported`), so the model can tell a missing resident from a refused `task_for_pid`.
+The model sees fifteen tools named `reverse_*`. Reads (`reverse_status`, `reverse_logs`, `reverse_process_list`, `reverse_process_images`, `reverse_macho_analyze`, `reverse_symbols`, `reverse_memory_read`, `reverse_memory_scan`) run without asking; `reverse_memory_write`, `reverse_hook_install` and `reverse_inject_dylib` each require one "allow once" inside the open turn, with a summary naming the process, address and value. Failures come back as the protocol's stable codes (`not-connected`, `denied`, `unsupported`), so the model can tell a missing resident from a refused `task_for_pid`.
 
 <a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
 
 - `reverse_hook_install` and `reverse_inject_dylib` answer `unsupported` from the resident: cross-process hooking and injection are not implemented in this build. The tweak tool still generates and saves Substrate source, which is the supported path.
-- The bundle has no per-capability flag. A composition with the tools but without the bridge would answer every call with a configuration error, which is worse than the capability being absent.
+- The switch granularity is the package, not one tool: a row's `config: { enabled: false }` drops every tool that package brings (all four of `tool-reverse-process`, for instance); there is nothing finer.
 
 ## Dev Note
 

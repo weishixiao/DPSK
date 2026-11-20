@@ -29,6 +29,7 @@ export type ValueType = typeof VALUE_TYPES[number]
 /** Every operation the resident serves. */
 export type ReverseOp =
   | 'system.hello'
+  | 'system.logs'
   | 'process.list'
   | 'process.images'
   | 'process.symbols'
@@ -139,9 +140,29 @@ export interface MachOReport {
   strings: string[]
 }
 
+/**
+ * One request the resident answered, as its log panel shows it.
+ *
+ * The resident keeps these in a bounded ring: the panel exists to explain what a
+ * session did to the device, not to persist a history.
+ */
+export interface ReverseLogEntry {
+  /** When the request was answered, ISO-8601 with milliseconds, UTC. */
+  at: string
+  /** The operation name as the request framed it. */
+  op: string
+  /** True when the resident answered with a result rather than an error. */
+  ok: boolean
+  /** Wall-clock time the resident spent on the request. */
+  elapsedMs: number
+  /** On failure `code: message`; absent on success. */
+  detail?: string
+}
+
 /** Argument shape of each operation. */
 export interface ReverseArgs {
   'system.hello': Record<string, never>
+  'system.logs': { limit: number }
   'process.list': { filter?: string }
   'process.images': { pid: number }
   'process.symbols': { pid: number; image?: string; filter?: string; limit: number }
@@ -182,6 +203,12 @@ export interface ReverseResults {
     theos: boolean
     /** Operations this resident actually serves. */
     ops: ReverseOp[]
+  }
+  'system.logs': {
+    /** Answered requests, oldest first, at most as many as the caller asked for. */
+    entries: ReverseLogEntry[]
+    /** Requests the resident answered but had to drop from its bounded ring. */
+    dropped: number
   }
   'process.list': { processes: ReverseProcess[] }
   'process.images': { pid: number; images: ReverseImage[] }

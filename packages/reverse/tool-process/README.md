@@ -1,5 +1,5 @@
 ---
-description: "The process-discovery tools: reverse_status, reverse_process_list and reverse_process_images."
+description: "The process-discovery tools: reverse_status, reverse_logs, reverse_process_list and reverse_process_images."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Three read-only tools over `ctx.reverse`: `reverse_status` reports whether the resident is reachable and what it speaks, `reverse_process_list` lists live processes with their pids and paths, and `reverse_process_images` lists the Mach-O images mapped into one process, each with its base address. Nothing here changes the target, so nothing here asks for approval.
+Four read-only tools over `ctx.reverse`: `reverse_status` reports whether the resident is reachable and what it speaks, `reverse_logs` reads the resident's recent-operation log (which operation, verdict, elapsed time, failure text), `reverse_process_list` lists live processes with their pids and paths, and `reverse_process_images` lists the Mach-O images mapped into one process, each with its base address. Nothing here changes the target, so nothing here asks for approval.
 
 ## Table of Contents
 
@@ -32,6 +32,8 @@ Mount `@deepseek-ai/dsh-reverse-bridge` and this package. A call looks like:
 ## Understand the implementation
 
 `reverse_process_list` filters by substring on the process name or path; the filter is validated (length and type) before it reaches the socket. `reverse_process_images` needs the caller to have found the pid first — the tool does not guess. Results are rendered as compact tables, and a truncated list says so rather than silently stopping.
+
+`reverse_logs` reads the resident's 200-entry ring in memory; `limit` is validated against 1..200 (default 50), entries are rendered oldest first with their failure text, and when older entries were dropped the rendering says how many. It only reads the log, so like the other three it never asks for approval.
 
 <a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work

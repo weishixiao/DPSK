@@ -32,6 +32,7 @@ Confirm it is up by its own log line, `rv: resident listening on …`, and by `r
 | Operation | Status |
 |---|---|
 | `system.hello` | answers the protocol version and the operation list |
+| `system.logs` | a ring of the last 200 answers: moment (UTC ISO-8601), operation, verdict, elapsed time, failure text |
 | `process.list`, `process.images` | `proc_listpids`, then the target's own `vm_region_recurse` walk to find its Mach-O headers |
 | `process.symbols` | the image file's `LC_SYMTAB` and export names, rebased by the image's load address in the target |
 | `macho.analyze` | on-disk file: load commands, sections, dylibs, encryption, strings |
@@ -45,5 +46,6 @@ Confirm it is up by its own log line, `rv: resident listening on …`, and by `r
 
 - The socket is created `0600` in a `0700` directory: only `mobile` (and `root`) reach it. Anything that can reach it can write memory in other processes — treat the socket as a root-equivalent capability.
 - `memory.write` restores the region's original protection even when the write fails, and reports what was there before.
+- The log ring lives in memory only: a respring clears it, and past 200 entries the oldest are dropped with `dropped` reporting how many. Writes and reads take the same `@synchronized` lock, so two clients answering at once never interleave entries.
 - Scan and read are bounded by `RV_MAX_FRAME_BYTES` (8 MiB) and `RV_MAX_READ_LENGTH` (1 MiB); the client validates the same limits first, so a refused request fails before it reaches the device.
 - The four operation files compile and link against the iOS 18.5 SDK with `-Wall -Wextra` clean; `Tweak.xm` additionally needs Logos and `libsubstrate`, which only a Theos toolchain provides.

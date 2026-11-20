@@ -11,7 +11,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ReverseBridge } from '@deepseek-ai/dsh-reverse-bridge'
-import { normalizeArguments } from '@deepseek-ai/dsh-reverse-bridge'
+import {
+  DEFAULT_LOG_LIMIT,
+  MAX_LOG_LIMIT,
+  normalizeArguments,
+} from '@deepseek-ai/dsh-reverse-bridge'
 
 export const name = 'tool-reverse-process'
 export const inject = ['tools', 'reverse']
@@ -105,6 +109,75 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
     presentCall: () => ({ card: 'generic', title: 'Reverse bridge status', kind: 'other' }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'reverse_logs',
+    description:
+      'Read the resident\'s recent-operation log: for each request the resident answered, the moment, '
+      + 'the operation, whether it succeeded, how long it took, and the failure text. Use it to explain '
+      + 'what a session did to the device, or to see why an earlier reverse call was refused.',
+    parameters: {
+      limit: {
+        type: 'integer',
+        description: `How many of the newest entries to read, 1 to ${String(MAX_LOG_LIMIT)}. Defaults to ${String(DEFAULT_LOG_LIMIT)}.`,
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          entries: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                at: { type: 'string', required: true },
+                op: { type: 'string', required: true },
+                ok: { type: 'boolean', required: true },
+                elapsedMs: { type: 'integer', required: true },
+                detail: { type: 'string' },
+              },
+            },
+          },
+          dropped: { type: 'integer', required: true },
+        },
+      },
+      render: (_args, value) => {
+        if (value.entries.length === 0) {
+          return [{ type: 'text', text: 'The resident has answered no request since it started.' }]
+        }
+        const rows = value.entries.map(entry => {
+          // The entry carries UTC; the panel shows the wall clock of the moment only.
+          const clock = entry.at.slice(11, 19)
+          const verdict = entry.ok ? 'ok  ' : 'fail'
+          const tail = entry.detail === undefined ? '' : `  ${entry.detail}`
+          return `${clock}  ${verdict}  ${String(entry.elapsedMs).padStart(6)}ms  ${entry.op}${tail}`
+        })
+        const tail = value.dropped === 0
+          ? ''
+          : `\n${String(value.dropped)} older entries were dropped from the resident's ring`
+        return [{ type: 'text', text: `${value.entries.length} logged operations:\n${rows.join('\n')}${tail}` }]
+      },
+    },
+    async execute(args, exec) {
+      const result = await reverse.call(
+        'system.logs',
+        normalizeArguments('system.logs', args.limit === undefined ? {} : { limit: args.limit }),
+        { signal: exec.signal },
+      )
+      return {
+        entries: result.entries.map(entry => {
+          const summary = { at: entry.at, op: entry.op, ok: entry.ok, elapsedMs: entry.elapsedMs }
+          return entry.detail === undefined ? summary : { ...summary, detail: entry.detail }
+        }),
+        dropped: result.dropped,
+      }
+    },
+    presentCall: () => ({ card: 'generic', title: 'Resident operation log', kind: 'other' }),
   }))
 
   ctx.tools.register(defineTool({

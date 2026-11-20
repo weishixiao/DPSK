@@ -59,7 +59,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 |---|---|
 | `packages/reverse/protocol/` | 操作表、请求/响应帧、错误码、参数校验（`validate.ts`）与行分帧（`frame.ts`） |
 | `packages/reverse/bridge/` | 能力缝 `ReverseBridge` 与套接字提供者；每次高危操作前经 `ctx.approval` 征询 |
-| `packages/reverse/tool-process/` | `reverse_status`、`reverse_process_list`、`reverse_process_images` |
+| `packages/reverse/tool-process/` | `reverse_status`、`reverse_logs`、`reverse_process_list`、`reverse_process_images` |
 | `packages/reverse/tool-macho/` | `reverse_macho_analyze` |
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
@@ -88,11 +88,11 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 {"id":"<uuid>","ok":false,"error":{"code":"denied","message":"task_for_pid(1234) was refused ..."},"elapsedMs":2}
 ```
 
-操作表：`system.hello`、`process.list`、`process.images`、`process.symbols`、`macho.analyze`、`memory.read`、`memory.scan`、`memory.write`、`hook.install`、`inject.dylib`。
+操作表：`system.hello`、`system.logs`、`process.list`、`process.images`、`process.symbols`、`macho.analyze`、`memory.read`、`memory.scan`、`memory.write`、`hook.install`、`inject.dylib`。
 
 错误码：`bad-request`、`invalid-args`、`not-connected`、`timeout`、`cancelled`、`denied`、`not-found`、`target-gone`、`unsupported`、`protocol-mismatch`、`remote-error`。
 
-`system.hello` 回答里的 `ops` 是**该常驻端实际服务**的操作列表。当前 resident 构建服务前八个；`hook.install` 与 `inject.dylib` 返回 `unsupported` 并说明原因（见[已知边界](#已知边界)）。
+`system.hello` 回答里的 `ops` 是**该常驻端实际服务**的操作列表。当前 resident 构建服务前九个；`hook.install` 与 `inject.dylib` 返回 `unsupported` 并说明原因（见[已知边界](#已知边界)）。
 
 <a id="设备侧常驻端"></a>
 ## 设备侧常驻端
@@ -103,7 +103,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 |---|---|
 | `Tweak.xm` | `%ctor` 启动监听，不 hook SpringBoard 自身任何行为；启动期异常只记日志，常驻端离线，桌面照常运行 |
 | `ReverseResident.plist` | 过滤器，只注入 `com.apple.SpringBoard` |
-| `RVServer.m` | 监听、按行分帧、操作表分发、`system.hello`；每个请求在自己的 autorelease pool 里、在异常边界内执行，抛出的异常变成该请求的 `remote-error` 回包 |
+| `RVServer.m` | 监听、按行分帧、操作表分发、`system.hello`、`system.logs` 的应答日志环形缓冲；每个请求在自己的 autorelease pool 里、在异常边界内执行，抛出的异常变成该请求的 `remote-error` 回包 |
 | `RVProcess.m` | 进程枚举（`sysctl` + `proc_pidpath`）、映像枚举（扫描 VM 区域里的 Mach-O 头）、符号表读取与重基 |
 | `RVMachO.m` | 文件级 Mach-O 分析：依赖、段与节、加密标志、平台、ObjC 名称、字符串 |
 | `RVMemory.m` | `mach_vm_read_overwrite` 读、区域遍历扫描、写前保存原保护并恢复 |
@@ -125,6 +125,12 @@ Tweak 也是**串接**而不是替换进程原有的未捕获异常处理器，�
 ### 定位目标
 
 `reverse_process_list` 接名字片段，也接 **BundleID**：`com.burbn.instagram` 和 `Instagram` 一样能找到那个 app，返回结果里每个进程都带 `bundleId`。以反域名前缀开头的过滤器会先按 BundleID 校验再发出，格式错的在这里就被拒，而不是回一个空列表、看起来像"app 没在运行"。
+
+### 日志面板
+
+`reverse_logs` 读的是常驻端自己的应答日志：每个请求一行，含时刻（UTC）、操作名、成败、耗时与失败文本。它是"刚才那次调用为什么被拒"的第一手答案——`unsupported`、`invalid-args`、`denied` 都在这里留下原话，不必再去翻 SpringBoard 的 `rv:` 系统日志。
+
+环形缓冲在常驻端内存里，200 条封顶：respring 会清空，被挤掉的旧条目只记一个计数，工具在渲染里说明丢了多少（结果里的 `dropped`）。日志不落盘，因此不含任何跨会话历史。
 
 ### Theos 环境
 
@@ -162,7 +168,7 @@ make install            # 或把 deb 交给用户的包管理器
 | 行 | 能力 | 带来的工具 |
 |---|---|---|
 | `reverse-bridge` | 桥本身 | — |
-| `tool-reverse-process` | 运行中的进程 | `reverse_status`、`reverse_process_list`、`reverse_process_images` |
+| `tool-reverse-process` | 运行中的进程与应答日志 | `reverse_status`、`reverse_logs`、`reverse_process_list`、`reverse_process_images` |
 | `tool-reverse-macho` | 静态文件分析 | `reverse_macho_analyze` |
 | `tool-reverse-symbol` | 符号查找 | `reverse_symbols` |
 | `tool-reverse-memory` | 目标内存读、扫描、写 | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |

@@ -59,7 +59,7 @@ The seam has the usual three roles: `ReverseBridge` (Service Definition, `packag
 |---|---|
 | `packages/reverse/protocol/` | Operation table, request/response frames, error codes, argument validation (`validate.ts`), line framing (`frame.ts`) |
 | `packages/reverse/bridge/` | Seam `ReverseBridge` and the socket provider; asks `ctx.approval` before every mutating operation |
-| `packages/reverse/tool-process/` | `reverse_status`, `reverse_process_list`, `reverse_process_images` |
+| `packages/reverse/tool-process/` | `reverse_status`, `reverse_logs`, `reverse_process_list`, `reverse_process_images` |
 | `packages/reverse/tool-macho/` | `reverse_macho_analyze` |
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
@@ -88,11 +88,11 @@ Response, same `id`:
 {"id":"<uuid>","ok":false,"error":{"code":"denied","message":"task_for_pid(1234) was refused ..."},"elapsedMs":2}
 ```
 
-Operations: `system.hello`, `process.list`, `process.images`, `process.symbols`, `macho.analyze`, `memory.read`, `memory.scan`, `memory.write`, `hook.install`, `inject.dylib`.
+Operations: `system.hello`, `system.logs`, `process.list`, `process.images`, `process.symbols`, `macho.analyze`, `memory.read`, `memory.scan`, `memory.write`, `hook.install`, `inject.dylib`.
 
 Error codes: `bad-request`, `invalid-args`, `not-connected`, `timeout`, `cancelled`, `denied`, `not-found`, `target-gone`, `unsupported`, `protocol-mismatch`, `remote-error`.
 
-`system.hello`'s `ops` is what that resident **actually serves**. The current build serves the first eight; `hook.install` and `inject.dylib` answer `unsupported` with the reason (see [known boundaries](#known-boundaries)).
+`system.hello`'s `ops` is what that resident **actually serves**. The current build serves the first nine; `hook.install` and `inject.dylib` answer `unsupported` with the reason (see [known boundaries](#known-boundaries)).
 
 <a id="device-side-resident"></a>
 ## Device-side resident
@@ -103,7 +103,7 @@ Source lives in `native/reverse-resident/`:
 |---|---|
 | `Tweak.xm` | `%ctor` starts the listener and hooks nothing of SpringBoard's own behaviour; a start-up exception is logged and leaves the resident offline rather than the desktop down |
 | `ReverseResident.plist` | Filter: only `com.apple.SpringBoard` |
-| `RVServer.m` | Listening socket, line framing, dispatch table, `system.hello`; every request runs in its own autorelease pool inside an exception boundary that turns a raised exception into a `remote-error` frame |
+| `RVServer.m` | Listening socket, line framing, dispatch table, `system.hello`, and the answered-request ring behind `system.logs`; every request runs in its own autorelease pool inside an exception boundary that turns a raised exception into a `remote-error` frame |
 | `RVProcess.m` | Process list (`sysctl` + `proc_pidpath`), image enumeration (Mach-O headers found at VM-region starts), symbol table reading and rebasing |
 | `RVMachO.m` | File-level analysis: dependencies, segments and sections, encryption flag, platform, Objective-C names, strings |
 | `RVMemory.m` | `mach_vm_read_overwrite` reads, region-walk scans, writes that save and restore the region's protection |
@@ -125,6 +125,12 @@ The tweak also chains, rather than replaces, the process's uncaught-exception ha
 ### Locating a target
 
 `reverse_process_list` takes a name fragment or a **bundle identifier**: `com.burbn.instagram` finds the app as well as `Instagram` does, and the answer carries the `bundleId` of each process. A filter that starts with a reverse-DNS prefix is validated as a bundle identifier before it is sent, so a malformed one is refused here instead of coming back as an empty list that reads like "the app is not running".
+
+### The operation log
+
+`reverse_logs` reads the resident's own answered-request log: one line per request, with its moment (UTC), operation name, verdict, elapsed time and failure text. It is the first-hand answer to "why was that call refused" — `unsupported`, `invalid-args` and `denied` keep their exact words here, without going back to SpringBoard's `rv:` system log.
+
+The ring lives in the resident's memory, capped at 200 entries: a respring clears it, and entries pushed out by newer ones are only counted, with the tool's rendering saying how many (the result's `dropped`). The log is never written to disk, so it carries no history across sessions.
 
 ### Theos environment
 
@@ -162,7 +168,7 @@ One capability can also be dropped on its own: give that row `config: { enabled:
 | Row | Capability | Tools it brings |
 |---|---|---|
 | `reverse-bridge` | The seam itself | — |
-| `tool-reverse-process` | Running processes | `reverse_status`, `reverse_process_list`, `reverse_process_images` |
+| `tool-reverse-process` | Running processes and the answered-request log | `reverse_status`, `reverse_logs`, `reverse_process_list`, `reverse_process_images` |
 | `tool-reverse-macho` | Static file analysis | `reverse_macho_analyze` |
 | `tool-reverse-symbol` | Symbol lookup | `reverse_symbols` |
 | `tool-reverse-memory` | Reading, scanning, writing target memory | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
