@@ -38,7 +38,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 模型 ↔ agent-loop（core，未改）
          │ tool.execute
          ▼
-   dsh-tool-reverse-*（6 个工具，只做参数整形与审批）
+   dsh-tool-reverse-*（7 个工具包：只做参数整形与审批；theos 那两个走 ctx.shell，不在这条链上）
          │ ctx.reverse.call()
          ▼
    dsh-reverse-bridge（能力缝 + 本地套接字提供者）
@@ -64,6 +64,7 @@ harness 进程内**永不**调用 `task_for_pid`、`mach_vm_*`、`dlopen` 注入
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
 | `packages/reverse/tool-tweak/` | `reverse_hook_install`、`reverse_inject_dylib`（前置一次审批；安装行为本身返回 `unsupported`） |
+| `packages/reverse/tool-theos/` | `reverse_theos_scaffold`、`reverse_theos_build`：写出纯 Objective-C 的 Theos 工程，再经一次审批调用本机 `make`（不进 `ctx.reverse`，走 `ctx.shell`） |
 | `packages/reverse/scripts/` | `reverse_script_save`、`reverse_script_list`、`reverse_script_read`、`reverse_script_delete`：把 hook、内存脚本与笔记当成文件存起来 |
 | `packages/bundle/reverse/` | 可选 bundle，`cordis.patch.yml` 只 insert 自己的行 |
 | `packages/llm/llm-failover/` | 多模型路由：某个 provider 报余额/凭据失败时，下一步切到配置里的下一个 provider |
@@ -173,6 +174,7 @@ make install            # 或把 deb 交给用户的包管理器
 | `tool-reverse-symbol` | 符号查找 | `reverse_symbols` |
 | `tool-reverse-memory` | 目标内存读、扫描、写 | `reverse_memory_read`、`reverse_memory_scan`、`reverse_memory_write` |
 | `tool-reverse-tweak` | Hook 与注入请求 | `reverse_hook_install`、`reverse_inject_dylib` |
+| `tool-reverse-theos` | 用本机 make 构建 tweak 工程 | `reverse_theos_scaffold`、`reverse_theos_build`（后者每次构建都问一次） |
 | `reverse-scripts` | 落盘的脚本 | `reverse_script_save`、`reverse_script_list`、`reverse_script_read`、`reverse_script_delete` |
 
 自分 profile 片段：
@@ -232,6 +234,7 @@ dsh:
 6. `reverse_memory_scan {pid, type:"u64", value:"0"}` —— 找数值（金币、剩余次数）。
 7. `reverse_memory_write {pid, address:"0x...", type:"u64", value:"999999"}` —— 每次写都要在打开的 turn 内点一次"允许一次"。
 8. `reverse_hook_install` —— 把你写好的 hook 源码经审批交给常驻端；本版本常驻端返回 `unsupported`，因此留下来的就是源码本身（见下方边界）。
+9. `reverse_theos_scaffold {path, packageId, bundleId, scheme}` → `reverse_theos_build {path}` —— 把第 8 步的源码放进一个纯 Objective-C 的 Theos 工程并调用本机 `make`；构建那一步会在审批里写明完整命令行。
 
 <a id="安全边界"></a>
 ## 安全边界
@@ -249,7 +252,8 @@ dsh:
 |---|---|
 | `hook.install` | 常驻端返回 `unsupported`。跨进程 inline hook 需要目标进程内的 hook 引擎，本版本没有内置；`reverse_hook_install` 仍会把你写的源码送去审批，所以会话里的源码就是 Theos 编译 tweak 的起点 |
 | `inject.dylib` | 同上，返回 `unsupported`。用越狱自带的 dylib 注入器或 tweak 过滤器加载 |
-| 远程 Theos 编译 | `system.hello` 的 `theos` 字段只报告设备上是否可见 Theos；resident 尚未驱动编译 |
+| `reverse_theos_build` 的构建 | 审批是唯一门槛，构建本身没有沙箱：Makefile 能以 harness 用户的身份做任何事。成功路径尚未在装有 Theos 的设备上跑过 |
+| 远程 Theos 编译 | `system.hello` 的 `theos` 字段只报告设备上是否可见 Theos；resident 不驱动编译。编译由 Node 侧的 `reverse_theos_build` 经 `ctx.shell` 调用本机 `make` 完成，没装 Theos 的设备得到 `theos-unavailable` |
 | `objc-method` 符号 | 仅从文件符号表与名称表推断，尚未从目标运行时读取 class/method 列表 |
 | 异常保护的范围 | 兜住的是 ObjC 异常与可返回的 mach 错误码。野指针、`SIGSEGV` 这类进程级崩溃无法在库内兜住——那种情况 Tweak 只保证不会因为"监听没起来"而拖垮桌面 |
 | 文档配对记录 | 本目录的中英配对 `readme.i18n.yaml` 尚未生成：在有 Node 的机器上执行 `pnpm run verify-translation-pairing --write docs/reverse/readme.md` |

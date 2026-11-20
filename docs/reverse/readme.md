@@ -38,7 +38,7 @@ The harness process **never** calls `task_for_pid`, `mach_vm_*` or `dlopen` inje
 model ↔ agent-loop (core, unchanged)
          │ tool.execute
          ▼
-   dsh-tool-reverse-* (six tools: argument shape and approval only)
+   dsh-tool-reverse-* (seven tool packages: argument shape and approval only; the two theos tools go through ctx.shell and stay off this chain)
          │ ctx.reverse.call()
          ▼
    dsh-reverse-bridge (capability seam + local-socket provider)
@@ -64,6 +64,7 @@ The seam has the usual three roles: `ReverseBridge` (Service Definition, `packag
 | `packages/reverse/tool-symbol/` | `reverse_symbols` |
 | `packages/reverse/tool-memory/` | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
 | `packages/reverse/tool-tweak/` | `reverse_hook_install`, `reverse_inject_dylib` (behind one approval; the installation itself answers `unsupported`) |
+| `packages/reverse/tool-theos/` | `reverse_theos_scaffold`, `reverse_theos_build`: writes a plain Objective-C Theos project, then runs the device's own `make` behind one approval (through `ctx.shell`, never `ctx.reverse`) |
 | `packages/reverse/scripts/` | `reverse_script_save`, `reverse_script_list`, `reverse_script_read`, `reverse_script_delete`: hooks, memory scripts and notes kept as files |
 | `packages/bundle/reverse/` | Optional bundle whose `cordis.patch.yml` only inserts its own rows |
 | `packages/llm/llm-failover/` | Multi-model routing: when a provider answers with a quota or credential failure, the next step selects the next configured provider |
@@ -173,6 +174,7 @@ One capability can also be dropped on its own: give that row `config: { enabled:
 | `tool-reverse-symbol` | Symbol lookup | `reverse_symbols` |
 | `tool-reverse-memory` | Reading, scanning, writing target memory | `reverse_memory_read`, `reverse_memory_scan`, `reverse_memory_write` |
 | `tool-reverse-tweak` | Hook and inject requests | `reverse_hook_install`, `reverse_inject_dylib` |
+| `tool-reverse-theos` | Building a tweak project with the device's own make | `reverse_theos_scaffold`, `reverse_theos_build` (the build asks every time) |
 | `reverse-scripts` | Saved scripts on disk | `reverse_script_save`, `reverse_script_list`, `reverse_script_read`, `reverse_script_delete` |
 
 Fragment for your own profile:
@@ -230,6 +232,7 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 6. `reverse_memory_scan {pid, type:"u64", value:"0"}` — find a value (coins, remaining attempts).
 7. `reverse_memory_write {pid, address:"0x...", type:"u64", value:"999999"}` — each write needs one "allow once" inside the open turn.
 8. `reverse_hook_install` — takes the hook source you wrote and puts it through approval; this build's resident answers `unsupported`, so what you keep is the source itself (see the boundary below).
+9. `reverse_theos_scaffold {path, packageId, bundleId, scheme}` → `reverse_theos_build {path}` — puts step 8's source into a plain Objective-C Theos project and runs the device's own `make`; the build's approval names the exact command line.
 
 <a id="security-boundary"></a>
 ## Security boundary
@@ -247,7 +250,8 @@ Keys stay with the existing credentials/settings: `DEEPSEEK_API_KEY` (or the `de
 |---|---|
 | `hook.install` | Answers `unsupported`. Cross-process inline hooking needs a hook engine inside the target, which this build does not carry; `reverse_hook_install` still takes the source you wrote and puts it through approval, so the source in the transcript is the starting point for a Theos-built tweak |
 | `inject.dylib` | Same, `unsupported`. Load the dylib with the jailbreak's own injector or a tweak filter |
-| Remote Theos builds | `system.hello`'s `theos` field only reports whether Theos is visible on device; the resident does not drive a build yet |
+| `reverse_theos_build`'s build | Approval is the whole gate and the build is not sandboxed: a Makefile can do anything the harness user can. The success path has not run on a device that has Theos |
+| Remote Theos builds | `system.hello`'s `theos` field only reports whether Theos is visible on device; the resident does not drive a build. Compiling is `reverse_theos_build`'s job on the Node side, through `ctx.shell` and the device's own `make`; a device without one gets `theos-unavailable` |
 | `objc-method` symbols | Inferred from the file's symbol and name tables only; the target runtime's class/method lists are not read yet |
 | Reach of the exception boundary | It contains Objective-C exceptions and mach errors that return a code. A wild pointer or `SIGSEGV` is a process-level crash no in-process guard can contain — what the tweak guarantees is narrower: a resident that fails to start never takes the desktop with it |
 | Bilingual pairing record | `readme.i18n.yaml` for this directory is not generated yet: on a machine with Node run `pnpm run verify-translation-pairing --write docs/reverse/readme.md` |

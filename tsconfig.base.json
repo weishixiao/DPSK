@@ -645,6 +645,7 @@
       "@deepseek-ai/dsh-tool-reverse-memory": ["./packages/reverse/tool-memory/src"],
       "@deepseek-ai/dsh-tool-reverse-process": ["./packages/reverse/tool-process/src"],
       "@deepseek-ai/dsh-tool-reverse-symbol": ["./packages/reverse/tool-symbol/src"],
+      "@deepseek-ai/dsh-tool-reverse-theos": ["./packages/reverse/tool-theos/src"],
       "@deepseek-ai/dsh-tool-reverse-tweak": ["./packages/reverse/tool-tweak/src"],
       "@deepseek-ai/dsh-tool-schedule": ["./packages/schedule/tool-schedule/src"],
       "@deepseek-ai/dsh-tool-session-list": ["./packages/session-query/tool-session-list/src"],

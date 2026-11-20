@@ -31,6 +31,7 @@ reverse 组让一个组合能够读取所运行越狱设备上的进程与内存
 | [`tool-symbol/`](tool-symbol/README.md) | `reverse_symbols`：从目标映像的符号表取运行时地址 | 注册工具 |
 | [`tool-memory/`](tool-memory/README.md) | `reverse_memory_read`、`reverse_memory_scan`，以及需要审批的 `reverse_memory_write` | 注册工具 |
 | [`tool-tweak/`](tool-tweak/README.md) | `reverse_hook_install`、`reverse_inject_dylib`：生成 Substrate 源码，两者前置审批 | 注册工具 |
+| [`tool-theos/`](tool-theos/README.md) | `reverse_theos_build`、`reverse_theos_scaffold`：一次审批后调用本机 make，并写出可直接构建的纯 Objective-C 工程 | 注册工具 |
 | [`scripts/`](scripts/README.md) | `reverse_script_save`、`reverse_script_list`、`reverse_script_read`、`reverse_script_delete`：把 hook、内存脚本与笔记当文件存起来 | 注册工具 |
 
 列出这些行的 bundle 是 [`packages/bundle/reverse`](../bundle/reverse/README.md)；常驻端的源码、构建与安装见 [`native/reverse-resident`](../../native/reverse-resident/README.md)。

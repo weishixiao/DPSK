@@ -31,6 +31,7 @@ The reverse group gives a composition read access to processes and memory on the
 | [`tool-symbol/`](tool-symbol/README.md) | `reverse_symbols`: runtime addresses from a target's image symbol tables | registers tools |
 | [`tool-memory/`](tool-memory/README.md) | `reverse_memory_read`, `reverse_memory_scan`, and the approved `reverse_memory_write` | registers tools |
 | [`tool-tweak/`](tool-tweak/README.md) | `reverse_hook_install`, `reverse_inject_dylib`: generated Substrate source and the approvals in front of both | registers tools |
+| [`tool-theos/`](tool-theos/README.md) | `reverse_theos_build`, `reverse_theos_scaffold`: runs the device's own make behind one approval, and writes a plain Objective-C project to run it on | registers tools |
 | [`scripts/`](scripts/README.md) | `reverse_script_save`, `reverse_script_list`, `reverse_script_read`, `reverse_script_delete`: hooks, memory scripts and notes kept as files | registers tools |
 
 The bundle that lists these rows is [`packages/bundle/reverse`](../bundle/reverse/README.md); the resident's source, build and installation are in [`native/reverse-resident`](../../native/reverse-resident/README.md).

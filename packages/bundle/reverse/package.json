@@ -44,6 +44,7 @@
     "@deepseek-ai/dsh-tool-reverse-memory": "workspace:*",
     "@deepseek-ai/dsh-tool-reverse-process": "workspace:*",
     "@deepseek-ai/dsh-tool-reverse-symbol": "workspace:*",
+    "@deepseek-ai/dsh-tool-reverse-theos": "workspace:*",
     "@deepseek-ai/dsh-tool-reverse-tweak": "workspace:*"
   },
   "peerDependencies": {

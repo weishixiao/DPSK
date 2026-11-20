@@ -41,5 +41,16 @@
     - id: tool-reverse-tweak
       name: '@deepseek-ai/dsh-tool-reverse-tweak'
 
+    - id: tool-reverse-theos
+      name: '@deepseek-ai/dsh-tool-reverse-theos'
+      config:
+        enabled: true
+        # The device's own Theos: the build runs this make, in a project the user
+        # names, and asks for approval first. A device without Theos reports the
+        # spawn failure instead of pretending to compile.
+        makePath: make
+        theosRoot: /var/jb/opt/theos
+        timeoutMs: 600000
+
     - id: reverse-scripts
       name: '@deepseek-ai/dsh-reverse-scripts'

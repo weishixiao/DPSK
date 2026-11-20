@@ -47,7 +47,7 @@ dsh:
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
-本 bundle 只是 `insert` 行的 patch；它不改写下层任何一行，所以聊天、agent 循环、持久化与审批的行为与没有它时完全一致。行包括桥、`tool-reverse-process`、`tool-reverse-macho`、`tool-reverse-symbol`、`tool-reverse-memory`、`tool-reverse-tweak` 与 `reverse-scripts`。其中任何一行都能用 `config: { enabled: false }` 单独关掉。常驻端不是这里的包：它是 `native/reverse-resident/` 下的 Theos tweak，桥只经它的 Unix 套接字访问。
+本 bundle 只是 `insert` 行的 patch；它不改写下层任何一行，所以聊天、agent 循环、持久化与审批的行为与没有它时完全一致。行包括桥、`tool-reverse-process`、`tool-reverse-macho`、`tool-reverse-symbol`、`tool-reverse-memory`、`tool-reverse-tweak`、`tool-reverse-theos` 与 `reverse-scripts`。其中任何一行都能用 `config: { enabled: false }` 单独关掉。常驻端不是这里的包：它是 `native/reverse-resident/` 下的 Theos tweak，桥只经它的 Unix 套接字访问。
 
 <a id="further-exploration"></a>
 ## 延伸阅读
@@ -58,12 +58,13 @@ dsh:
 <a id="model-experience"></a>
 ## 模型体验
 
-模型看到十五个名为 `reverse_*` 的工具。读取类（`reverse_status`、`reverse_logs`、`reverse_process_list`、`reverse_process_images`、`reverse_macho_analyze`、`reverse_symbols`、`reverse_memory_read`、`reverse_memory_scan`）不需要询问即可运行；`reverse_memory_write`、`reverse_hook_install`、`reverse_inject_dylib` 各自需要在打开的 turn 内点一次"允许一次"，提示里写明进程、地址与值。失败以协议的稳定错误码返回（`not-connected`、`denied`、`unsupported`），模型因此能区分"常驻端没装"与"`task_for_pid` 被拒"。
+模型看到十七个名为 `reverse_*` 的工具。读取类（`reverse_status`、`reverse_logs`、`reverse_process_list`、`reverse_process_images`、`reverse_macho_analyze`、`reverse_symbols`、`reverse_memory_read`、`reverse_memory_scan`）不需要询问即可运行；`reverse_theos_scaffold` 同样安静地写工程文件；`reverse_memory_write`、`reverse_hook_install`、`reverse_inject_dylib` 与 `reverse_theos_build` 各自需要在打开的 turn 内点一次"允许一次"，提示里写明进程、地址与值——构建则写明那条 `make` 命令行。失败以协议的稳定错误码返回（`not-connected`、`denied`、`unsupported`），模型因此能区分"常驻端没装"与"`task_for_pid` 被拒"。
 
 <a id="known-limitations-and-deferred-work"></a>
 ## 已知限制与后续工作
 
-- `reverse_hook_install` 与 `reverse_inject_dylib` 由常驻端回答 `unsupported`：本构建尚未实现跨进程 hook 与注入。tweak 工具仍会生成并保存 Substrate 源码，那是受支持的路径。
+- `reverse_hook_install` 与 `reverse_inject_dylib` 由常驻端回答 `unsupported`：本构建尚未实现跨进程 hook 与注入。tweak 工具仍会生成并保存 Substrate 源码，Theos 工具随后把它脚手架成工程并构建——那是受支持的路径。
+- `reverse_theos_build` 只在装了带 `make` 的 Theos 的设备上能编译。没有的设备得到 `theos-unavailable` 失败，并点名 `Config.makePath` 与 `Config.theosRoot`；harness 不会替它编译。
 - 开关粒度是"整个包"，不是单个工具：一行 `config: { enabled: false }` 关掉该包带来的全部工具（例如 `tool-reverse-process` 的四个），没有更细的开关。
 
 ## 开发备注
