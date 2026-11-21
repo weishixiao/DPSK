@@ -7,6 +7,10 @@ struct WebContainer: UIViewRepresentable {
     let url: URL
     /// A change asks for the same page again.
     let reloadToken: Int
+    /// Appearance the page should render in. WKWebView turns this into the
+    /// `prefers-color-scheme` the harness's own theme reads, so the page and the
+    /// shell never disagree at the seam.
+    let theme: AppTheme
     /// Called with the reason a load the shell should report went wrong.
     let onFailure: (String) -> Void
 
@@ -22,8 +26,12 @@ struct WebContainer: UIViewRepresentable {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.isOpaque = false
-        view.backgroundColor = .black
-        view.scrollView.backgroundColor = .black
+        view.overrideUserInterfaceStyle = theme.interfaceStyle
+        // Cleared rather than painted: an opaque web view would flash its colour
+        // before the page's first paint, which is the one moment the two themes
+        // would visibly disagree.
+        view.backgroundColor = .clear
+        view.scrollView.backgroundColor = .clear
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.allowsBackForwardNavigationGestures = true
         view.load(URLRequest(url: url))
@@ -31,6 +39,9 @@ struct WebContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
+        if view.overrideUserInterfaceStyle != theme.interfaceStyle {
+            view.overrideUserInterfaceStyle = theme.interfaceStyle
+        }
         guard context.coordinator.loadedToken != reloadToken else { return }
         context.coordinator.loadedToken = reloadToken
         view.load(URLRequest(url: url))

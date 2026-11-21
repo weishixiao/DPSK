@@ -51,7 +51,10 @@ targets:
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
         UILaunchScreen: {}
-        UIUserInterfaceStyle: Dark
+        # No UIUserInterfaceStyle: the appearance follows the in-app setting
+        # (Settings → 外观), and `system` means what iOS says. Pinning Dark here
+        # would override the setting for the shell while leaving the page free,
+        # which is the one combination that looks broken.
         UIStatusBarStyle: UIStatusBarStyleLightContent
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

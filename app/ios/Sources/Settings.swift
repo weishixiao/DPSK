@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// How the app reaches a harness host.
 enum LaunchMode: String, Codable, CaseIterable, Identifiable {
@@ -19,11 +20,53 @@ enum LaunchMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Which appearance the shell uses.
+///
+/// The shell and the Web UI have to agree, or the seam between them shows: a light
+/// page under a black status bar reads as a bug. `system` follows iOS, which is what
+/// most people expect; the two explicit cases exist for anyone who wants the app to
+/// stay put while the device switches at sunset.
+enum AppTheme: String, Codable, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+
+    /// What to hand SwiftUI; `nil` means "let iOS decide".
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    /// What to hand the WKWebView, so the page's `prefers-color-scheme` matches.
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch self {
+        case .system: return .unspecified
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 /// What the user chose, persisted between launches.
 struct AppSettings: Codable, Equatable {
     var mode: LaunchMode = .remote
     /// Host as typed: `192.168.1.20:8787`, `box.local:8787` or a full URL.
     var remoteURL: String = ""
+    /// Appearance of the shell and of the page it hosts.
+    var theme: AppTheme = .system
 
     static let fallback = AppSettings()
 

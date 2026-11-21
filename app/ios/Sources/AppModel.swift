@@ -61,9 +61,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Adopt a settings change.
+    ///
+    /// Only a change to where the page comes from costs a reconnect: switching the
+    /// appearance republishes `settings`, which is enough for the shell to repaint
+    /// and for the web view to be told a new interface style. Tearing the page down
+    /// to change a colour would lose the conversation's scroll position.
     func apply(_ next: AppSettings) {
+        let reconnects = next.mode != settings.mode || next.remoteURL != settings.remoteURL
         settings = next
         store.save(next)
+        guard reconnects else { return }
         phase = .idle
         start()
     }
