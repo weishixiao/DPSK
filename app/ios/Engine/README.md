@@ -86,11 +86,18 @@ providers，`tool-fs-search`、`workspace-changes`、`terminal-bash`、PTC 运�
 
 ## 已知缺口
 
-1. **会话持久化还不能用。** `session-persistence-jsonl` 与 `-sqlite` 的重写锁来自
-   `@deepseek-ai/node-addon-system`，它按平台发 `system.node`，仓库里没有 iOS 版；
-   而自签的 App 无法 `dlopen` 一个未签名的 `.node`。缺 addon 时两个 provider 都
-   拒绝写所有权——也就是存不下会话。要补的是 `native/system` 的 iOS 构建，并把
-   `system.node` 签进包，这是打包步骤，不是一行 patch。
+1. **会话持久化：addon 已经会编进包，但没在真机上验过。**
+   `session-persistence-jsonl` 与 `-sqlite` 的重写锁来自
+   `@deepseek-ai/node-addon-system`，它按平台发 `system.node`，仓库里没有 iOS 版。
+   现在 `prepare-engine.sh` 的 `stage_system_addon` 用 `native/system` 的
+   `flock.c` 对 iPhoneOS SDK 现编一份，覆盖 harness 里
+   `@deepseek-ai/node-addon-system-darwin-arm64/bin/system.node`（本构建的
+   `process.platform` 是 `darwin`，`flock.ts` 就是按这两个值找包），再 `--sign -`
+   ad-hoc 签名——iOS 不让没有代码签名的 `.node` 被 `dlopen`，App 封印只管字节，
+   不管代码签名。
+   未验证的部分：`flock` 在 iOS libSystem 上的实际行为、ad-hoc 签名后的 `.node`
+   在真机上能否加载、重签 `.ipa` 的工具是否会把它一并封进 CodeResources。这三条
+   都只有真机能回答；失败形态是第一次落盘报 addon 加载错误，`engine.log` 里能看到。
 2. **工具行的真正来源是 preset，覆盖层管不到。** `tool-bash`、`tool-pwsh`、
    `tool-fs-search` 这些在 web bundle 的宿主平面上被关掉，再由每个 preset 在自己的
    作用域里重新挂载——`minimal`、`standard`、`cordis`、`ptc` 四个 preset 全部带

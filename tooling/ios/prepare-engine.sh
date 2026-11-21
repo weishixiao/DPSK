@@ -414,6 +414,68 @@ stage_node() {
   otool -l "$vendor_dir/lib/libnode.dylib" | grep -A2 LC_BUILD_VERSION | head -n 6
 }
 
+# ── the session lock: native/system's flock addon, rebuilt for iOS ───────────
+
+# `session-persistence-jsonl` and `session-persistence-sqlite` take their rewrite
+# lock from @deepseek-ai/node-addon-system, which publishes one `system.node` per
+# platform and has no iOS package. `flock.ts` resolves
+# `@deepseek-ai/node-addon-system-<platform>-<arch>/bin/system.node`, and this
+# build reports `darwin` (see the --dest-os note above) on arm64, so the file it
+# opens on a phone is the macOS package's. That one is macOS-only code, and the
+# load would fail at the first save. Rather than teach the phone a new platform
+# name, replace that binary: `flock.c` is 300 lines of stable Node-API over a
+# single `flock(LOCK_EX | LOCK_NB)`, and libSystem has that syscall on iOS.
+#
+# Two things make this a packaging step rather than a compile:
+#
+#   1. It has to run after both halves — node_api.h comes from the headers
+#      stage_node installs, and the destination lives inside the harness
+#      stage_harness deploys.
+#   2. A `.node` is dlopen'd, and iOS will not map executable code that carries
+#      no signature, so it is ad-hoc signed here (`--sign -`). The app seal covers
+#      the file's bytes; the code signature is what dyld checks. The toolchain that
+#      re-signs the .ipa later re-seals the bundle around this file.
+stage_system_addon() {
+  say "building native/system's flock addon for iOS"
+  command -v xcrun >/dev/null || fail "xcrun is missing — this step needs Xcode"
+
+  local sdk source package_dir
+  sdk=$(xcrun --sdk iphoneos --show-sdk-path) || fail "no iPhoneOS SDK is installed"
+  source="$root/native/system/packages/entry/src/flock.c"
+  [ -f "$source" ] || fail "native/system's flock.c is missing from this checkout"
+  [ -f "$vendor_dir/include/node/node_api.h" ] \
+    || fail "Node's headers are not staged — the addon compiles against them (run the Node half first)"
+
+  # The name is not a guess: `process.platform` on this build is `darwin` and
+  # `process.arch` is `arm64`, and flock.ts builds the package name from those.
+  package_dir="$engine_dir/runtime/harness/node_modules/@deepseek-ai/node-addon-system-darwin-arm64"
+  [ -f "$package_dir/package.json" ] \
+    || fail "the deployed harness has no node-addon-system-darwin-arm64 — pnpm deploy must keep it (flock.ts require.resolve()s its package.json)"
+
+  mkdir -p "$package_dir/bin"
+  # Same flags native/system/scripts/build.ts uses for the macOS build, with the
+  # iOS target swapped in: -bundle/-undefined dynamic_lookup because the addon
+  # resolves Node's symbols at load, and NAPI_VERSION=8 because that is the
+  # version the binding declares.
+  xcrun --sdk iphoneos clang \
+    -target "arm64-apple-ios$ios_min" -isysroot "$sdk" \
+    -std=c11 -O2 -fPIC -fvisibility=hidden -DNAPI_VERSION=8 \
+    -I "$vendor_dir/include/node" \
+    -bundle -undefined dynamic_lookup \
+    -o "$package_dir/bin/system.node" "$source" \
+    || fail "the flock addon did not compile against the iPhoneOS SDK"
+
+  codesign --force --sign - "$package_dir/bin/system.node" \
+    || fail "could not ad-hoc sign the flock addon — an unsigned .node will not dlopen on a device"
+
+  say "flock addon staged"
+  # printf-only fallback: a missing `lipo`/`file` must not turn a good build into
+  # a failed one under `set -e`.
+  lipo -info "$package_dir/bin/system.node" 2>/dev/null \
+    || file "$package_dir/bin/system.node" 2>/dev/null || true
+  printf 'prepare-engine: %s\n' "$package_dir/bin/system.node"
+}
+
 run_node=1
 run_harness=1
 if [ "$node_only" -eq 1 ]; then
@@ -429,6 +491,14 @@ fi
 if [ "$run_harness" -eq 1 ]; then
   stage_harness
 fi
+# It needs both halves, so a half-run says what is missing instead of failing:
+# --node-only stages no harness to put it in, and --harness-only cannot compile
+# without the headers the Node half installs.
+if [ "$run_harness" -eq 1 ] && [ -f "$vendor_dir/include/node/node_api.h" ]; then
+  stage_system_addon
+elif [ "$run_harness" -eq 1 ]; then
+  say "skipping the flock addon: Node's headers are not staged, so there is nothing to compile against"
+fi
 
 say "done"
 cat <<'NOTE'
@@ -436,6 +506,7 @@ Next:
   1. tooling/ios/build.sh iphoneos <output-dir>   # xcodegen + xcodebuild
   2. Sign and install the .ipa with your own toolchain.
 Open the app, choose 本机引擎, and read Library/Logs/engine.log in the app
-container if it does not come up. Session saving still needs an iOS build of
-native/system's addon — see app/ios/Engine/README.md.
+container if it does not come up. Session saving needs the flock addon this
+script stages into the harness; how that is verified (and what is still
+unproven) is in app/ios/Engine/README.md.
 NOTE
