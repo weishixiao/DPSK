@@ -172,6 +172,15 @@ stage_harness() {
 # first-party output imports has to resolve inside it. A gap is copied in from this
 # checkout, and a gap this checkout does not build fails the staging step. Fill,
 # then check again -- a copied package imports modules of its own.
+#
+# The second gap is the copies' own dependencies. `deploy` links every package it
+# carries into the store -- `node_modules/<name> -> .pnpm/<name>@<version>/
+# node_modules/<name>` -- and a store package finds its dependencies as sibling
+# links in that same directory. A copy made here is a plain directory with no
+# siblings, so each of its `dependencies` has to sit in `node_modules` itself, or
+# its first import throws `ERR_MODULE_NOT_FOUND`. A dependency the store already
+# holds is linked, not copied: the bytes are in the tree, and the store entry
+# resolves its own dependencies the way pnpm laid them out.
 
 # The `@deepseek-ai/*` modules the deployed first-party output imports, one per
 # line, sorted. Only built output is read: the CLI's own `lib/`, and `lib/` inside
@@ -200,33 +209,238 @@ harness_missing_peers() {
   done
 }
 
+# The packages in the tree that are real directories instead of links into the
+# store: the ones this script copied. They are the only ones whose dependencies
+# have to be resolved from `node_modules` itself.
+harness_copied_packages() {
+  local harness="$1" dir
+  for dir in "$harness"/node_modules/* "$harness"/node_modules/@*/*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    case "${dir##*/}" in
+      .pnpm|.bin|node_modules) continue ;;
+    esac
+    [ -f "$dir/package.json" ] && printf '%s\n' "$dir"
+  done
+}
+
+# The dependency names a manifest declares. `dependencies` only: a peer is the
+# consumer's to provide, and an optional dependency is absent by design on a
+# platform that does not offer it -- the platform-specific prebuilds are exactly
+# that.
+manifest_dependencies() {
+  node -e '
+    const { readFileSync } = require("fs");
+    const manifest = JSON.parse(readFileSync(process.argv[1], "utf8"));
+    for (const name of Object.keys(manifest.dependencies || {})) console.log(name);
+  ' "$1"
+}
+
+# The dependencies of the copied packages that the tree cannot resolve from them.
+harness_missing_copied_dependencies() {
+  local harness="$1" dir manifest dep
+  while IFS= read -r dir; do
+    manifest="$dir/package.json"
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      [ -e "$harness/node_modules/$dep" ] || printf '%s\n' "$dep"
+    done < <(manifest_dependencies "$manifest")
+  done < <(harness_copied_packages "$harness")
+}
+
+# Where this checkout has a package installed. Asked of Node because the workspace
+# keeps most packages in the store rather than at the root, so a dependency of a
+# dependency is usually not at `node_modules/<name>`.
+workspace_package_dir() {
+  node -e '
+    const { createRequire } = require("module");
+    const { existsSync } = require("fs");
+    const request = createRequire(process.argv[1] + "/package.json");
+    for (const base of request.resolve.paths(process.argv[2]) || []) {
+      const dir = base + "/" + process.argv[2];
+      if (existsSync(dir + "/package.json")) { console.log(dir); process.exit(0); }
+    }
+    process.exit(1);
+  ' "$root" "$1"
+}
+
+# Put one package into the deployed tree. A package the deploy's store already
+# holds is linked to it: the bytes are there, and the store entry resolves its own
+# dependencies. Anything else is copied out of this checkout, which is the only
+# case that leaves a package without sibling links.
+stage_harness_package() {
+  local harness="$1" name="$2"
+  # Its own statement: `local x=1 y=$x` expands `$x` before `local` runs, which
+  # under `set -u` is an unbound variable rather than an empty one.
+  local target="$harness/node_modules/$name" source link
+  # `-e`, not `-L`: a link an earlier run left behind may be the very thing that
+  # does not resolve, and that is a package to stage, not one to keep.
+  [ -e "$target" ] && return 0
+  mkdir -p "$(dirname "$target")"
+  if [ -d "$harness/node_modules/.pnpm/node_modules/$name" ]; then
+    # The link target is relative to the link's own directory, which is
+    # `node_modules/` for an unscoped name and `node_modules/<scope>/` for a
+    # scoped one — hence one `../` less than the name has segments. Relative, so
+    # the tree stays movable: the deploy is copied into DPSK.app and the absolute
+    # path it has here is not the one it has there.
+    case "$name" in
+      */*) link="../.pnpm/node_modules/$name" ;;
+      *) link=".pnpm/node_modules/$name" ;;
+    esac
+    say "the deploy left $name out; linking it from the store"
+    rm -f "${target:?}"
+    ln -s "$link" "$target"
+    if [ -e "$target" ]; then
+      return 0
+    fi
+    # A link that does not resolve is worse than no link at all: Node reports the
+    # module as absent either way, but only the copy shows what was staged.
+    say "the store's $name does not resolve from node_modules; copying it instead"
+    rm -f "${target:?}"
+    source=$(cd "$harness/node_modules/.pnpm/node_modules/$name" && pwd -P) \
+      || fail "the store's $name is unreachable"
+    cp -RL "$source" "$target"
+    return 0
+  fi
+  source=$(workspace_package_dir "$name") \
+    || fail "the deployed harness needs $name, and this checkout does not install it"
+  say "the deploy left $name out; taking it from the workspace"
+  rm -rf "${target:?}"
+  mkdir -p "$target"
+  # Not `cp -R`: pnpm gives every package in the checkout its own `node_modules`,
+  # full of links into the store, and copying that duplicates the whole closure
+  # inside the copy -- the deployed tree would grow by more than the package does.
+  # The copy gets no dependency links at all; every name its manifest declares is
+  # staged beside it by harness_missing_copied_dependencies instead.
+  #
+  # `tar` because the exclusion is the point. `-h` dereferences what the package
+  # itself links to, so the copy carries no link back into this checkout.
+  tar -C "$source" -chf - --exclude='*node_modules*' . \
+    | tar -C "$target" -xf - \
+    || fail "could not copy $name out of this checkout"
+}
+
+# The imports `harness_missing_peers` accepts by directory but Node would not
+# resolve: a staged package whose built entry is missing (`lib/` absent) answers
+# the directory check and fails on the first import at run time. Reported, not
+# fatal -- which files a package publishes is its own manifest's business, and a
+# client-only package is imported by the bundle in the WebView, not by Node.
+harness_unresolvable_imports() {
+  local harness="$1"
+  [ -f "$harness/lib/bin.js" ] || return 0
+  node -e '
+    const { createRequire } = require("module");
+    const request = createRequire(process.argv[1] + "/lib/bin.js");
+    for (const name of process.argv.slice(2)) {
+      try {
+        request.resolve(name);
+      } catch {
+        console.log(name);
+      }
+    }
+  ' "$harness" $(harness_imports "$harness")
+}
+
 stage_harness_peers() {
-  local harness="$1" passes=0 gaps name source target
+  local harness="$1" passes=0 gaps name
   while :; do
     passes=$((passes + 1))
     [ "$passes" -le 8 ] \
-      || fail "the deployed harness still imports packages that are not in it: $(harness_missing_peers "$harness" | tr '\n' ' ')"
-    gaps=$(harness_missing_peers "$harness")
-    [ -n "$gaps" ] || return 0
+      || fail "the deployed harness still needs packages that are not in it: $( { harness_missing_peers "$harness"; harness_missing_copied_dependencies "$harness"; } | sort -u | tr '\n' ' ')"
+    gaps=$( { harness_missing_peers "$harness"; harness_missing_copied_dependencies "$harness"; } | sort -u)
+    [ -n "$gaps" ] || break
     # A here-document rather than a pipe: the loop has to run in this shell, or a
     # `fail` inside it would only end a subshell and the staging step would carry
     # on with a tree that is known to be incomplete.
     while IFS= read -r name; do
       [ -n "$name" ] || continue
-      source="$root/node_modules/$name"
-      [ -d "$source" ] \
-        || fail "the deployed harness imports $name, and this checkout does not install it"
-      target="$harness/node_modules/$name"
-      say "the deploy left $name out; taking it from the workspace"
-      rm -rf "${target:?}"
-      mkdir -p "$(dirname "$target")"
-      # `-L` because node_modules/<name> is a link into the workspace: the deployed
-      # tree has to carry the package itself, not a path back into the checkout.
-      cp -RL "$source" "$target"
+      stage_harness_package "$harness" "$name"
     done <<EOF
 $gaps
 EOF
   done
+  local unresolvable
+  unresolvable=$(harness_unresolvable_imports "$harness")
+  if [ -n "$unresolvable" ]; then
+    say "these are staged but resolve to nothing, so their built output is missing: $(printf '%s ' $unresolvable)"
+  fi
+}
+
+# ── the other platforms' binaries the deploy carries ─────────────────────────
+
+# `deploy` resolves `optionalDependencies` for the machine that runs it -- a Mac --
+# so the tree holds prebuilt binaries for every platform a package offers: sharp
+# and its libvips, sherpa-onnx, koffi, ripgrep, node-pty's spawn helpers and
+# LibreOffice's `dsoffice`, built for macOS, beside the Windows and Linux
+# prebuilds of the packages that ship them. iOS loads none of them: dyld refuses a
+# Mach-O whose platform is not iOS, so requiring one of these fails on the device
+# whether the file is there or not, and the file is only weight in the bundle. The
+# first deploy measured 16 macOS Mach-O in 199 MB, most of it `dsoffice`, a
+# desktop executable the app could never start.
+#
+# Two rules, because a directory name and a file's build target do not always
+# agree: the directories that name another platform go first (they also carry the
+# Windows and Linux files `otool` would never be asked about), then every
+# remaining Mach-O is asked what it was built for and dropped when the answer names
+# another platform. What this script stages itself -- Node's headers,
+# `libnode.dylib`, the flock addon -- is iOS by construction and survives the
+# second rule.
+prune_non_ios_binaries() {
+  local harness="$1" before after removed=0 unreadable=0 path listing
+  say "dropping the binaries built for other platforms"
+  # Without these two the second rule would read every Mach-O as "not iOS" and
+  # delete the flock addon this script just built, so they are checked first.
+  command -v file >/dev/null 2>&1 || fail "file(1) is missing — the pruning step cannot tell a Mach-O apart"
+  command -v otool >/dev/null 2>&1 || fail "otool is missing — the pruning step cannot tell an iOS binary apart"
+  before=$(du -sm "$harness" | cut -f1)
+
+  # `darwin-*` is the Mac: the store names `@esbuild/darwin-x64` and friends that
+  # way, and node-pty ships `prebuilds/darwin-x64` beside `darwin-arm64`. An iOS
+  # build never lands under a name like that, so the whole directory goes.
+  find "$harness/node_modules" -type d \
+    \( -name 'win32-*' -o -name 'win32_*' -o -name 'linux-*' -o -name 'linux_*' \
+       -o -name 'android-*' -o -name 'android_*' -o -name 'freebsd-*' \
+       -o -name 'openbsd-*' -o -name 'sunos-*' -o -name 'wasm32-*' \
+       -o -name 'darwin-*' -o -name 'darwin_*' \) \
+    -prune -exec rm -rf {} + 2>/dev/null || true
+
+  # `file` decides what is worth asking `otool` about: the tree has tens of
+  # thousands of files and only a handful are Mach-O. `otool -l` prints one
+  # `platform` line per slice, so a fat binary that carries an iOS slice is kept.
+  # `-perm -100` rather than `-u+x`, which BSD find does not take.
+  #
+  # Three answers, and only one of them deletes. IOS keeps the file, another
+  # platform drops it, and *no* platform line at all -- otool failed, or the file
+  # predates LC_BUILD_VERSION -- keeps it: `command -v` proves otool exists, not
+  # that it runs (a bootstrap's llvm-otool execs an `otool-classic` that may be
+  # absent), and a probe that cannot answer must not cost the app a binary dyld
+  # needs. Such a run removes nothing and says so.
+  while IFS= read -r -d '' path; do
+    case "$(file -b "$path" 2>/dev/null)" in
+      Mach-O*) ;;
+      *) continue ;;
+    esac
+    listing=$(otool -l "$path" 2>/dev/null || true)
+    case "$listing" in
+      *'platform IOS'*|*LC_VERSION_MIN_IPHONEOS*) continue ;;
+    esac
+    if ! printf '%s\n' "$listing" \
+        | grep -qE 'platform (MACOS|MACCATALYST|TVOS|WATCHOS|BRIDGEOS|DRIVERKIT|XROS)'; then
+      unreadable=$((unreadable + 1))
+      continue
+    fi
+    rm -f "$path"
+    removed=$((removed + 1))
+  done < <(find "$harness/node_modules" -type f \
+             \( -name '*.node' -o -name '*.dylib' -o -name '*.so' -o -perm -100 \) -print0)
+
+  # A platform directory leaves its package behind as an empty shell.
+  find "$harness/node_modules" -depth -type d -empty -delete 2>/dev/null || true
+
+  after=$(du -sm "$harness" | cut -f1)
+  say "dropped $removed Mach-O files built for another platform; the harness is $before MB -> $after MB"
+  if [ "$unreadable" -gt 0 ]; then
+    say "$unreadable Mach-O files named no platform at all and were kept — otool could not describe them"
+  fi
 }
 
 # ── Node: the iPhoneOS build of the runtime the app links ────────────────────
@@ -866,6 +1080,11 @@ if [ "$run_harness" -eq 1 ] && [ -f "$vendor_dir/include/node/node_api.h" ]; the
   stage_system_addon
 elif [ "$run_harness" -eq 1 ]; then
   say "skipping the flock addon: Node's headers are not staged, so there is nothing to compile against"
+fi
+# Last, so that what this script stages is already in place: the iOS binaries are
+# what the pruning rule keeps.
+if [ "$run_harness" -eq 1 ]; then
+  prune_non_ios_binaries "$engine_dir/runtime/harness"
 fi
 
 say "done"

@@ -48,8 +48,11 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: DPSK
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        # The version is the build's, not a constant: `tooling/ios/build.sh`
+        # passes MARKETING_VERSION and CURRENT_PROJECT_VERSION on the xcodebuild
+        # line, and the defaults in `settings` are what a bare Xcode build gets.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         # No UIUserInterfaceStyle: the appearance follows the in-app setting
         # (Settings → 外观), and `system` means what iOS says. Pinning Dark here
@@ -90,6 +93,11 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         CODE_SIGN_ENTITLEMENTS: DPSK.entitlements
+        # The icon is `Sources/Assets.xcassets/AppIcon.appiconset` — one 1024
+        # square, which actool slices for every size iOS asks for. `Assets` sits
+        # inside `Sources`, so the catalog is already in the target's sources;
+        # this setting is what tells actool to compile it as the app icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Swift sees the node bridge through this header.
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge.h
         CLANG_CXX_LANGUAGE_STANDARD: c++20

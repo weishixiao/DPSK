@@ -54,6 +54,17 @@ fi
 
 xcodegen generate --spec "$spec"
 
+# Every build carries its own version: the patch number is the number of commits
+# on the branch and the build number is the same count, so a build names the tree
+# it came from and two builds of one commit are the same build. The major/minor
+# line stays in project.yml — this reads it rather than keeping a second copy —
+# and a tree without git (a source tarball) falls back to build 1.
+version_line=$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\)\..*/\1/p' \
+  project.yml | head -1)
+build_number=$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)
+marketing_version="${version_line:-0.1}.$build_number"
+echo "build.sh: version $marketing_version ($build_number)"
+
 if [ "$sdk" = iphonesimulator ]; then
   destination="generic/platform=iOS Simulator"
 else
@@ -68,6 +79,8 @@ xcodebuild \
   -destination "$destination" \
   -derivedDataPath "$work/DerivedData" \
   -archivePath "$work/DPSK-$sdk.xcarchive" \
+  MARKETING_VERSION="$marketing_version" \
+  CURRENT_PROJECT_VERSION="$build_number" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
