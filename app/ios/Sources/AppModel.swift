@@ -19,6 +19,14 @@ final class AppModel: ObservableObject {
     private let store = SettingsStore()
     private let runtime = EngineRuntime.bundled()
 
+    /// A boot attempt that never reached a serving port, left over from a previous
+    /// launch: Node took the process down with it. Booting again on launch would
+    /// crash-loop before Settings is reachable, so this stops the automatic attempt
+    /// and says so.
+    private var crashedDuringBoot = EnginePaths.pendingBootMarker() != nil
+    /// Set by `retry()`, the one way past the safety stop.
+    private var bootOnDemand = false
+
     /// True only when this build carries a packed Node runtime.
     var engineAvailable: Bool { runtime != nil }
 
@@ -39,8 +47,23 @@ final class AppModel: ObservableObject {
             }
             phase = .ready(url)
         case .engine:
+            if crashedDuringBoot && !bootOnDemand {
+                phase = .failed(
+                    "上次启动本机引擎时 App 崩溃了，所以这次没有自动重试。\n"
+                        + "日志：\(engineLogPath)\n"
+                        + "点「重试」再试一次，或在「设置」里改用远程主机。"
+                )
+                return
+            }
             startEngine()
         }
+    }
+
+    /// Boot again after a crash, once, on the user's word.
+    func retry() {
+        bootOnDemand = true
+        EnginePaths.clearBootMarker()
+        start()
     }
 
     private func startEngine() {

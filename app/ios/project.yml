@@ -78,6 +78,12 @@ targets:
         # allow-jit` (DPSK.entitlements). A sideloaded signature drops it, so the
         # default is interpretation; an entitled build sets this to true.
         DPSKEngineJIT: false
+        # The engine log is the only thing a failed boot leaves behind, and the UI
+        # that would show the path is exactly what a stuck boot cannot reach. With
+        # these two keys Documents/ appears in Files ▸ 我的 iPhone ▸ DPSK, so the log
+        # can be pulled off the device without Xcode or a cable.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dpsk.harness

@@ -25,14 +25,18 @@ int DPSKNodeStart(NSArray<NSString *> *arguments) {
     }
 
     std::vector<char *> argv;
-    argv.reserve(storage.size());
+    argv.reserve(storage.size() + 1);
     for (std::string &entry : storage) {
       argv.push_back(entry.data());
     }
+    // POSIX says argv is NULL-terminated, and Node's platform setup walks it
+    // (`uv_setup_args`) before it ever looks at argc.
+    const int argc = static_cast<int>(argv.size());
+    argv.push_back(nullptr);
 
     // Blocks for the whole life of the event loop. Node sets up its signals,
     // platform thread pool and main isolate here, so this must be the only call.
-    return node::Start(static_cast<int>(argv.size()), argv.data());
+    return node::Start(argc, argv.data());
   }
 }
 

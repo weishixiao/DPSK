@@ -87,6 +87,7 @@ actor EngineBoot {
             try prepareDirectories()
             launch(runtime: runtime)
             let url = try await waitForPort(runtime.port)
+            EnginePaths.clearBootMarker()
             state = .ready(url)
             return url
         } catch {
@@ -137,6 +138,12 @@ actor EngineBoot {
 
         let thread = Thread { [arguments, logURL] in
             let started = Date()
+            // Written before the call, and without buffering: if `node::Start`
+            // aborts the process (a signature iOS will not accept on
+            // libnode.dylib, a V8 failure at startup) this line is the only proof
+            // the engine was reached at all, and the absence of the line below it
+            // says the crash happened inside Node.
+            Self.appendLine("boot: calling node::Start, jit=\(EnginePaths.jitEntitled) args=\(arguments.joined(separator: " "))\n", to: logURL)
             let status = DPSKNodeStart(arguments)
             let line = "[engine] exited with \(status) after \(Int(Date().timeIntervalSince(started)))s\n"
             if let handle = try? FileHandle(forWritingTo: logURL) {
@@ -145,11 +152,35 @@ actor EngineBoot {
                 try? handle.close()
             }
         }
+        // Recorded before the call, cleared once the port answers: a marker that
+        // outlives the process is the only reliable sign of a crash inside Node.
+        EnginePaths.markBoot("args=\(arguments.joined(separator: " "))")
         // Node's main thread needs room for deep JSON and V8 recursion; the
         // default secondary-thread stack is too small for a large session log.
         thread.stackSize = 8 << 20
         thread.name = "dpsk-engine"
         thread.start()
+    }
+
+    /// Append one line to a file, creating it if needed.
+    static func appendLine(_ line: String, to url: URL) {
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// The last lines of the engine log, for the error the UI shows when boot
+    /// fails: the reason is usually inside Node's own output, not in this process.
+    static func logTail(_ lines: Int = 12) -> String {
+        let url = EnginePaths.logs.appendingPathComponent("engine.log")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        let tail = text.split(separator: "\n", omittingEmptySubsequences: false).suffix(lines)
+        return tail.isEmpty ? "" : "\n" + tail.joined(separator: "\n")
     }
 
     /// Wait for the loopback port to answer anything at all.
@@ -178,7 +209,7 @@ actor EngineBoot {
             try await Task.sleep(nanoseconds: 300_000_000)
         }
         session.finishTasksAndInvalidate()
-        throw EngineRuntime.EngineError.timedOut(60)
+        throw EngineRuntime.EngineError.bootFailed("等了 60 秒，127.0.0.1:\(port) 没有应答。日志尾部：\(Self.logTail())")
     }
 }
 
@@ -201,8 +232,34 @@ enum EnginePaths {
     }
 
     static var logs: URL {
-        let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-        return library.appendingPathComponent("Logs", isDirectory: true)
+        // Documents, not Library/Logs: `UIFileSharingEnabled` puts this folder in
+        // Files, which is the only way to read the log when the UI never got past
+        // the boot screen.
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    /// Written before `node::Start` and removed once the port answers. One left
+    /// behind means the process died inside Node during boot — and because the
+    /// chosen mode is persisted, booting again on the next launch would crash the
+    /// app before the user can reach Settings. `AppModel` reads this to stop
+    /// auto-booting after such a crash.
+    static var bootMarker: URL {
+        logs.appendingPathComponent("booting")
+    }
+
+    static func markBoot(_ text: String) {
+        try? Data(text.utf8).write(to: bootMarker)
+    }
+
+    static func clearBootMarker() {
+        try? FileManager.default.removeItem(at: bootMarker)
+    }
+
+    /// The marker's contents when a previous boot never finished.
+    static func pendingBootMarker() -> String? {
+        guard let text = try? String(contentsOf: bootMarker, encoding: .utf8) else { return nil }
+        return text.isEmpty ? "(空)" : text
     }
 
     /// Whether the signature grants V8 the JIT entitlement. Info.plist declares

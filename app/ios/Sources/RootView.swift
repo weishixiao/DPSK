@@ -87,7 +87,7 @@ struct RootView: View {
                 .foregroundStyle(palette.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
-                outlineButton("重试") { model.start() }
+                outlineButton("重试") { model.retry() }
                 outlineButton("设置") { editing = true }
             }
             .padding(.top, 4)
