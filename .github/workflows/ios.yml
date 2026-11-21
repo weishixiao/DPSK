@@ -52,18 +52,23 @@ jobs:
           key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
       # The unpacked tree and its objects are the expensive part: a cold build
       # compiles V8 twice and runs about two hours. Keeping them means a retry
-      # after a failure in a later step (`make` success, staging mistake) resumes
-      # instead of starting over -- which is exactly how the header-staging bug
-      # cost a second full build. The key moves with the compiler wrapper and the
-      # patches, because those are what make an object stale.
+      # after a failure in a later step resumes instead of starting over -- which
+      # is exactly how the header-staging bug cost a second full build.
+      #
+      # The key deliberately does NOT hash prepare-engine.sh: most edits to that
+      # file are in the staging half (harness deploy, header copy, error text) and
+      # leave every object valid, yet hashing the whole file threw the cache away
+      # twice in a row. What makes an object stale is the compiler wrapper and the
+      # patches, so the key carries the patches and a version number that a person
+      # bumps when the wrapper or its flags change. Bump v2 -> v3 when they do.
       - name: Restore the Node build tree
         id: tree
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/node-build
-          key: node-tree-v1-${{ hashFiles('tooling/ios/prepare-engine.sh', 'tooling/ios/patches/**') }}-${{ github.run_id }}
+          key: node-tree-v2-${{ hashFiles('tooling/ios/patches/**') }}-${{ github.run_id }}
           restore-keys: |
-            node-tree-v1-${{ hashFiles('tooling/ios/prepare-engine.sh', 'tooling/ios/patches/**') }}-
+            node-tree-v2-${{ hashFiles('tooling/ios/patches/**') }}-
       - name: Build Node for iOS and deploy the harness
         if: steps.staged.outputs.cache-hit != 'true'
         env:
@@ -79,7 +84,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/node-build
-          key: node-tree-v1-${{ hashFiles('tooling/ios/prepare-engine.sh', 'tooling/ios/patches/**') }}-${{ github.run_id }}
+          key: node-tree-v2-${{ hashFiles('tooling/ios/patches/**') }}-${{ github.run_id }}
       # The job log needs a sign-in to read; annotations show on the run page
       # itself. A failed cross-build is diagnosed from the last screenful.
       - name: Leave the tail of a failed build on the run page
