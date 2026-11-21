@@ -116,7 +116,17 @@ stage_harness() {
 
   rm -rf "$engine_dir/runtime/harness"
   mkdir -p "$engine_dir/runtime"
-  pnpm --filter @deepseek-ai/dsh --prod deploy "$engine_dir/runtime/harness"
+  # `strictDepBuilds` is off for this one call. The only unapproved build script in
+  # the closure is this repository's own `@deepseek-ai/dsh-subprocess-local`
+  # postinstall (it restores the executable bit on node-pty's macOS spawn helper),
+  # and pnpm cannot match it against an `allowBuilds` key: deploy resolves a
+  # workspace dependency to an absolute `file://` URL, so the entry is looked up as
+  # `...@file:///Users/runner/...` and a name-only key does not match. pnpm 11 turns
+  # an unmatched script into a hard error rather than a warning. Turning the check
+  # off here keeps the review list in pnpm-workspace.yaml meaningful for registry
+  # packages (koffi, esbuild, node-pty still need their entries) without inventing a
+  # machine-specific key for a package that lives in this checkout.
+  pnpm --config.strictDepBuilds=false --filter @deepseek-ai/dsh --prod deploy "$engine_dir/runtime/harness"
 
   # `host.mjs` imports `lib/bin.js`; without it the app boots and fails at once,
   # so the staging step refuses to leave a half-filled Engine/ behind.
