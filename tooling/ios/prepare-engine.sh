@@ -466,6 +466,23 @@ stage_node() {
         say "the patch set changed since this tree was built; restoring the pristine sources"
         restore_pristine "$source_dir"
       fi
+    elif [ -d out ]; then
+      # A tree restored from the caches written before this stamp existed
+      # (node-tree-v1-/v2- keys) carries no record of how it was built. It was
+      # built by the wrapper this script still calls `wrapper_version`, and its
+      # sources already hold the patch set of the time, so the objects are reused
+      # rather than paying the two hours again -- the workflow only hands such a
+      # tree over once, and the bookkeeping starts from here on. A tree for a
+      # different Node version is a different matter and is discarded.
+      case "$(basename "$source_dir")" in
+        *"$node_version"*)
+          reused=1
+          say "the restored tree predates the stamp; its objects are reused as they are"
+          ;;
+        *)
+          say "the restored tree is for another Node version; it is discarded"
+          ;;
+      esac
     fi
 
     # Only a fresh tree is guaranteed unpatched; on a reused one the copies came

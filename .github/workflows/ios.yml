@@ -88,8 +88,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/node-build
           key: node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-${{ github.run_id }}
+          # The second entry is the key family written before the tree carried a
+          # stamp (it hashed the patches instead). prepare-engine.sh reuses such a
+          # tree as it stands and says so in the log; this line is what keeps the
+          # two hours already spent on it from being thrown away. It can go once
+          # no cache of that shape is left.
           restore-keys: |
             node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-
+            node-tree-v2-
       - name: Build Node for iOS and deploy the harness
         if: steps.staged.outputs.cache-hit != 'true'
         env:
