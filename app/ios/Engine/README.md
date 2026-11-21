@@ -138,17 +138,41 @@ Node 版本或暂存布局要变时才改它。patches 不进缓存键——那�
    `ios.patch.yml`、再传这一份；文件缺失时跳过（退化成模型多一个跑不动的 `bash`）。
    仍未解决：`minimal` preset 还带 `terminal-*`，所以只能用 `standard`；
    要换 preset 得先在 web bundle 里加一个 iOS 版。
-3. **没在真机上跑过。** 这台设备没有 Node、没有 Xcode，`prepare-engine.sh`、
-   Xcode 链接、`node::Start` 的返回、`--jitless` 下 harness 的实际速度，全部只有
-   纸面推演。上面第 1、2 条同样没跑过——是从源码与 composition 读出来的结论。
-   第 2 条唯一验证过的是结构：生成的 YAML 能解析、插件条目 34→32（只少那两个）、
-   每一行都能逐字追回上游文件；它能否被 Loader 接受，只有真机知道。
+3. **`pnpm deploy` 不带 peer 依赖，harness 因此少首方包（已修，未复跑）。**
+   `deploy` 只复制被部署包的 `dependencies`，peer 依赖要由消费者自己提供；而这条闭包
+   里不少包把接口包声明成 peer（`dsh-atomic-write` 依赖 `dsh-error`、
+   `tool-bash` 依赖 `dsh-shell`……），仓库里靠 workspace 顶层链接总能解析，部署树里
+   却没有。第一次 import 就抛 `ERR_MODULE_NOT_FOUND`，App 只能看到引擎立刻退出。
+   真机那份部署树实测缺 11 个：`dsh-attachment`、`dsh-compaction`、`dsh-error`、
+   `dsh-fs`、`dsh-jobs`、`dsh-sandbox`、`dsh-scope`、`dsh-session-persistence`、
+   `dsh-session-query`、`dsh-shell`、`dsh-workflow`。
+   `prepare-engine.sh` 的 `stage_harness_peers` 现在拿部署树自检：首方 `lib/` 里
+   import 的每个 `@deepseek-ai/*` 都必须在树内解析得到，缺的从本 checkout 拷进去，
+   再查一遍（拷进来的包自己还会 import），最多 8 轮；checkout 里都没有的包直接
+   fail loud。这条检查已在那份真机部署树上跑过，列出的正是上面 11 个；补拷逻辑在
+   合成小树上验过两轮补全。整条链路（Mac 重跑 `prepare-engine.sh` → 重装 App →
+   引擎真的起来）还没有复跑，需要一台有 Xcode 的机器。
+4. **JIT 在这台设备上拿不到，`--jitless` 是唯一选项。** 用四种签名分别跑探针
+   （裸 `ldid`；`com.apple.security.cs.allow-jit`；`platform-application` +
+   `no-sandbox` + `get-task-allow`；TrollStore 式的
+   `jb.pmap_cs.custom_trust` + `get-task-allow`）：`MAP_JIT` 一律 `EPERM`（iOS 没有这个 flag），
+   `mmap(PROT_EXEC)` 得到的页被内核降成 `rw-`（崩溃报告里
+   `VM_ALLOCATE ... rw-/rwx`），跳进去即 `EXC_BAD_ACCESS`（Instruction Abort）。
+   所以 `DPSKEngineJIT` 保持 `false` 是对的，V8 只能解释执行。
+5. **没在真机上跑完整链路。** 这台设备没有 Node、没有 Xcode，`prepare-engine.sh`
+   和 Xcode 链接只能在 Mac 上做。已经跑过的部分是：App 里 `node::Start` 确实起来了
+   （`engine.log` 有 `[engine] exited with 0 after 1s`，说明 `libnode.dylib` 加载、
+   Node 启动、脚本执行都通了），死在 harness 的 import 上，也就是第 3 条。第 1 条
+   （flock addon）、第 2 条（preset patch 是否被 Loader 接受）、`--jitless` 下 harness
+   的实际速度，仍然只有重装之后才知道。
 
 ## 排查
 
 引擎起不来时先看 App 容器里的 `Library/Logs/engine.log`（设置页显示路径）：
 
 - `Cannot find module .../lib/bin.js`：`prepare-engine.sh` 的 harness 步骤没跑完。
+- `ERR_MODULE_NOT_FOUND` 指向某个 `@deepseek-ai/dsh-*`：部署树缺首方包，
+  `stage_harness_peers` 没跑到（或在 Mac 上用旧脚本打的包）。
 - `Loader` 报某个 provider 缺失：按 id 往 `ios.patch.yml` 加 `disabled: true`。
 - 进程立刻退出、日志空白：多半是 dylib 没被签名或 rpath 不对，检查
   `otool -L DPSK.app/DPSK | grep node` 是否指向 `@rpath/libnode.dylib`。
