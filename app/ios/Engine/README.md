@@ -84,6 +84,33 @@ providers，`tool-fs-search`、`workspace-changes`、`terminal-bash`、PTC 运�
 `officeKit`。`workspace-dependencies` 与两个遥测行本来就只在 desktop profile 启用，
 这里再关一次只是重复，还会把 desktop 的配置丢掉。
 
+## 构建树缓存（CI 里最贵的那一步）
+
+交叉编译 Node 要编两遍 V8，3 核 runner 上约两小时。所以 `prepare-engine.sh` 产出的构建树
+（解包的 Node 源码 + `out/`）由 CI 缓存，下次直接接手。判断「能不能复用」不在缓存键里，
+而在树自己身上：
+
+- **stamp**：`out/.dpsk-ios-tree`，一行 JSON，记录两个 wrapper 脚本的哈希、补丁集指纹、Node 版本。
+  wrapper 字节一致 ⇒ 编译参数（sysroot、`-DV8_TARGET_OS_IOS`、`-O3`/`-O1`、`-g0`）一致 ⇒ 对象有效。
+  Xcode 或 SDK 一换，哈希就变，对象照规矩丢掉重建。
+- **补丁集变了不丢树**：每个被补丁改写的文件，第一次打补丁前会在 `.dpsk-ios-pristine/` 留一份原件
+  （随树进缓存）。补丁集一变，先把原件放回去再打当前这组——这也让**删掉**一个补丁真的生效，
+  否则旧改动会一直留在源码里被编进去。
+- **mtime 分层**：缓存往返不保证时间戳，而 make 只看时间戳。复用时把源码置 2000、`out/` 置 2001、
+  被补丁改过的文件置 2002——严格递增，make 只重建补丁碰到的那几个 object。
+  （`patch` 会保留原文件 mtime，所以补丁后要显式 touch，否则会链接旧对象。）
+- **wrapper 路径固定**在 `$NODE_BUILD_DIR/toolchain`：gyp 会把路径写进每个生成的 makefile，
+  路径一变就得重跑 configure，而 configure 重写生成物 → 全部重编。复用树时**不跑 configure**。
+- **ccache** 兜底：workflow 装 ccache，wrapper 通过 `DPSK_CCACHE` 调它，目录在构建树里随缓存走。
+  即使 make 仍决定重编（SDK 变动、生成物被重写），也是回放缓存对象而不是再编两小时。
+  构建末尾会打印 `ccache --show-stats`，命中率就是下次要等多久的直接证据。
+
+缓存键只哈希 `tooling/ios/tree-cache-key` 一个文件（内容是 `tree-3 node-24.22.3`），
+Node 版本或暂存布局要变时才改它。patches 不进缓存键——那是 stamp 的事。
+`ios.yml` 里还有三件配套：`cancel-in-progress: false`（推送不再杀掉正在跑的构建）、
+保存后回查缓存是否真的存在（失败会打 warning）、以及每周两次只做 restore 的保温任务
+（GitHub 7 天不读就回收）。
+
 ## 已知缺口
 
 1. **会话持久化：addon 已经会编进包，但没在真机上验过。**
