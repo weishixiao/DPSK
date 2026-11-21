@@ -712,8 +712,21 @@ stage_system_addon() {
   # The name is not a guess: `process.platform` on this build is `darwin` and
   # `process.arch` is `arm64`, and flock.ts builds the package name from those.
   package_dir="$engine_dir/runtime/harness/node_modules/@deepseek-ai/node-addon-system-darwin-arm64"
-  [ -f "$package_dir/package.json" ] \
-    || fail "the deployed harness has no node-addon-system-darwin-arm64 — pnpm deploy must keep it (flock.ts require.resolve()s its package.json)"
+
+  # `pnpm deploy --prod` does not carry this one: the entry package lists it as an
+  # *optional* dependency, and deploy leaves optional workspace packages behind.
+  # flock.ts resolves the package's own `package.json` before loading the addon, so
+  # the directory has to exist; take the manifest and metadata from the workspace
+  # (the binary is built here, not shipped in the repository).
+  if [ ! -f "$package_dir/package.json" ]; then
+    local workspace_package="$root/native/system/packages/darwin-arm64"
+    [ -f "$workspace_package/package.json" ] \
+      || fail "native/system/packages/darwin-arm64 is missing from this checkout"
+    say "the deploy left node-addon-system-darwin-arm64 out; taking its manifest from the workspace"
+    mkdir -p "$package_dir"
+    cp "$workspace_package/package.json" "$workspace_package/prebuilds.json" "$package_dir/"
+    cp "$workspace_package/README.md" "$workspace_package/LICENSE" "$package_dir/" 2>/dev/null || true
+  fi
 
   mkdir -p "$package_dir/bin"
   # Same flags native/system/scripts/build.ts uses for the macOS build, with the
