@@ -50,13 +50,36 @@ jobs:
             app/ios/Vendor
             app/ios/Engine/runtime
           key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
+      # The unpacked tree and its objects are the expensive part: a cold build
+      # compiles V8 twice and runs about two hours. Keeping them means a retry
+      # after a failure in a later step (`make` success, staging mistake) resumes
+      # instead of starting over -- which is exactly how the header-staging bug
+      # cost a second full build. The key moves with the compiler wrapper and the
+      # patches, because those are what make an object stale.
+      - name: Restore the Node build tree
+        id: tree
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/node-build
+          key: node-tree-v1-${{ hashFiles('tooling/ios/prepare-engine.sh', 'tooling/ios/patches/**') }}-${{ github.run_id }}
+          restore-keys: |
+            node-tree-v1-${{ hashFiles('tooling/ios/prepare-engine.sh', 'tooling/ios/patches/**') }}-
       - name: Build Node for iOS and deploy the harness
         if: steps.staged.outputs.cache-hit != 'true'
         env:
           NODE_BUILD_DIR: ${{ runner.temp }}/node-build
+          NODE_REUSE_TREE: ${{ steps.tree.outputs.cache-matched-key != '' && '1' || '0' }}
         run: |
           set -o pipefail
           tooling/ios/prepare-engine.sh 2>&1 | tee "$RUNNER_TEMP/engine.log"
+      # Saved even when the job fails: that is the case this cache exists for.
+      - name: Keep the build tree for the next attempt
+        if: always() && steps.staged.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/node-build
+          key: node-tree-v1-${{ hashFiles('tooling/ios/prepare-engine.sh', 'tooling/ios/patches/**') }}-${{ github.run_id }}
       # The job log needs a sign-in to read; annotations show on the run page
       # itself. A failed cross-build is diagnosed from the last screenful.
       - name: Leave the tail of a failed build on the run page

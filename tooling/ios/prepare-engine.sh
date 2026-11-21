@@ -335,7 +335,15 @@ stage_node() {
     patch_ios_deps "$source_dir"
     patch_ios_sources "$source_dir"
 
-    rm -rf out
+    # A restored build tree means the objects match this exact wrapper and patch
+    # set (the cache key says so), so throwing them away would pay for V8 twice
+    # again. Anything else starts clean, because a half-built out/ from a
+    # different configuration is worse than a slow build.
+    if [ "${NODE_REUSE_TREE:-0}" = 1 ] && [ -d out ]; then
+      say "reusing the restored build tree"
+    else
+      rm -rf out
+    fi
 
     # `--dest-os=mac` is the right answer even though the target is iOS. Node's
     # configure passes the dest-os straight to gyp as `OS`, and gyp knows only
@@ -365,11 +373,27 @@ stage_node() {
   dylib=$(ls "$source_dir"/out/Release/libnode.*.dylib 2>/dev/null | head -n 1 || true)
   [ -n "$dylib" ] || fail "the build produced no libnode dylib"
 
+  # `make` compiles the library but stages no public headers: `out/Release/include/
+  # node` is produced by tools/install.py's headers-only mode (the same script the
+  # `tar-headers` Make target runs), not by the compile. The first run that got
+  # past compiling died on `cp -R out/Release/include/node` being absent -- so
+  # generate the layout instead of assuming it.
+  local header_layout="$source_dir/out/Release/include/node"
+  if [ ! -d "$header_layout" ]; then
+    local py
+    py=$(command -v python3 || command -v python || true)
+    [ -n "$py" ] || fail "no python3 on PATH to stage Node's public headers"
+    ( cd "$source_dir" && "$py" tools/install.py install --headers-only \
+        --dest-dir out/Release --prefix / ) \
+      || fail "tools/install.py could not stage Node's public headers"
+  fi
+  [ -d "$header_layout" ] || fail "no headers under out/Release/include/node even after install.py"
+
   mkdir -p "$vendor_dir/lib" "$vendor_dir/include"
   cp "$dylib" "$vendor_dir/lib/libnode.dylib"
   install_name_tool -id "@rpath/libnode.dylib" "$vendor_dir/lib/libnode.dylib"
   rm -rf "$vendor_dir/include/node"
-  cp -R "$source_dir/out/Release/include/node" "$vendor_dir/include/node"
+  cp -R "$header_layout" "$vendor_dir/include/node"
 
   say "linking target check"
   lipo -info "$vendor_dir/lib/libnode.dylib"
