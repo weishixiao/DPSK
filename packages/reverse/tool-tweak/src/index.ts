@@ -70,7 +70,6 @@ export function apply(ctx: Context, config: Config): void {
       },
       dylibPath: {
         type: 'string',
-        required: false,
         description:
           'The library built from that source (reverse_theos_build output), absolute path. A hook is code '
           + 'running inside the target and the resident has no compiler, so this is what actually gets '
@@ -87,11 +86,11 @@ export function apply(ctx: Context, config: Config): void {
           original: { type: 'string' },
         },
       },
-      render: (_args, value) => ({
+      render: (_args, value) => [{
         type: 'text',
         text: `Hook ${value.handle} installed (${value.mode})`
           + `${value.original === undefined ? '' : `, original at ${value.original}`}.`,
-      }),
+      }],
     },
     async execute(args, exec) {
       if (exec.agent === undefined) {
@@ -155,12 +154,12 @@ export function apply(ctx: Context, config: Config): void {
           image: { type: 'string' },
         },
       },
-      render: (_args, value) => ({
+      render: (_args, value) => [{
         type: 'text',
         text: value.injected
           ? `Loaded ${value.image ?? 'the library'} into the target.`
           : 'The resident did not load the library.',
-      }),
+      }],
     },
     async execute(args, exec) {
       if (exec.agent === undefined) {

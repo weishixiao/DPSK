@@ -126,7 +126,7 @@ export function apply(ctx: Context, config: Config): void {
             dylib: { type: 'string' },
           },
         },
-        render: (_args, value) => ({
+        render: (_args, value) => [{
           type: 'text',
           text: value.timedOut
             ? 'The build was stopped at its deadline; the streams below are what it printed until then.'
@@ -137,7 +137,7 @@ export function apply(ctx: Context, config: Config): void {
               + (value.dylib === undefined
                 ? ' No .dylib was compiled under .theos/obj, so there is nothing to inject.'
                 : ` Dylib: ${value.dylib} — pass this as dylibPath to reverse_hook_install or reverse_inject_dylib.`),
-        }),
+        }],
       },
       async execute(args, exec) {
         const shell = ctx.get('shell')
@@ -244,10 +244,10 @@ export function apply(ctx: Context, config: Config): void {
             files: { type: 'array', required: true, items: { type: 'string' } },
           },
         },
-        render: (_args, value) => ({
+        render: (_args, value) => [{
           type: 'text',
           text: `Scaffolded ${value.path}: ${value.files.join(', ')}.`,
-        }),
+        }],
       },
       async execute(args) {
         return scaffoldProject({

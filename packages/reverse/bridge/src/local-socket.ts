@@ -37,6 +37,9 @@ import type {
 // Type-only: resolves the `ctx.approval` service declaration without depending on
 // its implementation. The bridge works in compositions without it — every
 // dangerous operation is then refused, which is the fail-closed direction.
+// This is the repository's pattern for an optional service (see
+// packages/subagent/subagent/src/child-agent.ts); it needs the project reference
+// in tsconfig.json, which is what lets TypeScript see another package's sources.
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { ReverseBridge, ReverseBridgeError } from './seam.ts'
 import type { ReverseCallOptions, ReverseMutationOptions, ReverseState, ReverseStatus } from './seam.ts'

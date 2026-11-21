@@ -68,10 +68,10 @@ export function apply(ctx: Context, config: Config): void {
           ascii: { type: 'string', required: true },
         },
       },
-      render: (_args, value) => ({
+      render: (_args, value) => [{
         type: 'text',
         text: `${value.address}, ${value.length} bytes\n${formatDump(value.hex, value.ascii)}`,
-      }),
+      }],
     },
     async execute(args, exec) {
       const result = await reverse.call(
@@ -189,10 +189,10 @@ export function apply(ctx: Context, config: Config): void {
           written: { type: 'string', required: true },
         },
       },
-      render: (_args, value) => ({
+      render: (_args, value) => [{
         type: 'text',
         text: `Wrote ${value.written} at ${value.address} (was ${value.previous}).`,
-      }),
+      }],
     },
     async execute(args, exec) {
       if (exec.agent === undefined) {
