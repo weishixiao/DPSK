@@ -158,7 +158,10 @@ actor EngineBoot {
             throw EngineRuntime.EngineError.bootFailed("端口号无效")
         }
         let deadline = Date().addingTimeInterval(60)
-        var configuration = URLSessionConfiguration.ephemeral
+        // `let`: URLSessionConfiguration is a class, so setting its properties is
+        // not a mutation of this binding. With -warnings-as-errors the archive
+        // fails on the "never mutated" warning, which is how this line was found.
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 2
         configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration)
