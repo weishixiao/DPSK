@@ -9,8 +9,8 @@
 #
 #   * Node's version moves (different sources, different objects);
 #   * `prepare-engine.sh` changes the *layout* of what it stages inside the tree;
-#   * the compiler wrapper changes in a way `wrapper_version` in that script does
-#     not already cover.
+#   * the staging layout changes in a way the stamp in that script cannot see (the
+#     compiler wrapper is covered by the stamp's own hash, so it needs no bump).
 #
 # A patch-set change does NOT need a bump: the tree records the patch set it was
 # built from and restores its own pristine sources before re-applying. Editing

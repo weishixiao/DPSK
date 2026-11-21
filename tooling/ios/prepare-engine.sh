@@ -40,8 +40,9 @@
 # (`out/.dpsk-ios-tree`) recording the wrapper version and the patch set it was
 # built from. A matching wrapper reuses every object; a changed patch set puts the
 # pristine sources back first and lets `make` rebuild only what moved; a changed
-# wrapper discards the objects. `wrapper_version` below is what a wrapper change
-# bumps, `tooling/ios/tree-cache-key` is what a layout or Node-version change does.
+# wrapper discards the objects. The stamp's wrapper field is a hash of the
+# generated compiler wrappers, so nothing has to be bumped by hand for that;
+# `tooling/ios/tree-cache-key` is what a layout or Node-version change does.
 
 set -euo pipefail
 
@@ -59,12 +60,6 @@ ios_min="16.0"
 # the three-core runner CI uses. It is cached and reused (see ios.yml), and these
 # two values are what make reuse safe.
 #
-# `wrapper_version` is bumped whenever the compiler wrapper below changes what it
-# passes: flags, defines, sysroot choice. Objects built by a different wrapper
-# must not be linked into the app, so a mismatch throws the tree away instead --
-# slow, but only when a person deliberately changed the build.
-wrapper_version=3
-
 # Where the unpatched copy of every file a patch rewrites is kept, relative to the
 # Node source tree. See remember_pristine.
 pristine_dir=.dpsk-ios-pristine
@@ -345,6 +340,31 @@ restore_pristine() {
   done || true
 }
 
+# A tree restored from a cache written before the wrapper path became stable names
+# the old mktemp directory in every generated makefile. Point those at the current
+# wrapper instead of re-running configure: configure rewrites the generated
+# prerequisites, and everything downstream of them rebuilds. mtimes are preserved,
+# because a newer makefile is itself a reason for make to start over.
+retarget_legacy_toolchain() {
+  local source_dir="$1" toolchain="$2" file
+  [ -d "$source_dir/out" ] || return 0
+  # Only the generated build files name the compiler; an object file must never be
+  # rewritten, so the search is by name rather than by content.
+  find "$source_dir/out" -type f \
+      \( -name '*.mk' -o -name 'Makefile' -o -name '*.gypi' \) -print 2>/dev/null \
+    | while IFS= read -r file; do
+      grep -q 'dpsk-ios-toolchain\.' "$file" 2>/dev/null || continue
+      case "$file" in
+        *"$toolchain"/*) continue ;;
+      esac
+      cp -p "$file" "$file.dpsk-retarget"
+      sed -i '' -E "s|[^ \"']*/dpsk-ios-toolchain\.[A-Za-z0-9]+|$toolchain|g" "$file"
+      touch -r "$file.dpsk-retarget" "$file"
+      rm -f "$file.dpsk-retarget"
+    done || true
+  return 0
+}
+
 # The tree's own description of how it was built, written inside out/ so that
 # `rm -rf out` also forgets it. One line of JSON, read back with sed.
 stamp_file=.dpsk-ios-tree
@@ -404,13 +424,24 @@ stage_node() {
   say "iPhoneOS SDK $(basename "$sdk"), macOS SDK $(basename "$macsdk")"
 
   # The wrappers are generated per build and live outside the source tree, so a
-  # checkout is never dirtied by them.
-  local toolchain_dir
-  toolchain_dir=$(mktemp -d "${TMPDIR:-/tmp}/dpsk-ios-toolchain.XXXXXX")
+  # checkout is never dirtied by them. The path is stable on purpose: gyp bakes it
+  # into the makefiles it generates, and a reused tree keeps those makefiles. A
+  # fresh mktemp directory per run would leave every restored makefile pointing at
+  # a compiler that no longer exists, and re-running configure to repair that
+  # rewrites the generated prerequisites -- which is what turned a "warm" tree
+  # back into a full rebuild (openssl, ICU and V8 all recompiled after
+  # `configure completed successfully`). Under $work_dir, so it travels with the
+  # cached tree.
+  mkdir -p "$work_dir"
+  local toolchain_dir="$work_dir/toolchain"
+  mkdir -p "$toolchain_dir"
   write_toolchain_wrapper "$toolchain_dir/cc" "$host_cc"
   write_toolchain_wrapper "$toolchain_dir/cxx" "$host_cxx"
-
-  mkdir -p "$work_dir"
+  # The stamp records this hash instead of a hand-bumped number: the objects are
+  # valid exactly while the wrappers are byte-identical, which also covers an
+  # Xcode or SDK move that changes a sysroot path.
+  local wrapper_hash
+  wrapper_hash=$( { digest <"$toolchain_dir/cc"; digest <"$toolchain_dir/cxx"; } | digest )
   # The tarball unpacks to a directory whose name is not simply the version
   # (and a re-run may find an older tree there): ask the tree, never guess it.
   node_source() {
@@ -455,7 +486,7 @@ stage_node() {
     # text before the current patches go on -- otherwise a *removed* patch would
     # live on in the tree and make would link objects built from it.
     if [ -f "out/$stamp_file" ]; then
-      if [ "$(read_stamp "$source_dir" wrapper)" = "$wrapper_version" ]; then
+      if [ "$(read_stamp "$source_dir" wrapper)" = "$wrapper_hash" ]; then
         reused=1
       else
         say "the compiler wrapper changed since this tree was built; the objects are rebuilt from scratch"
@@ -469,7 +500,7 @@ stage_node() {
     elif [ -d out ]; then
       # A tree restored from the caches written before this stamp existed
       # (node-tree-v1-/v2- keys) carries no record of how it was built. It was
-      # built by the wrapper this script still calls `wrapper_version`, and its
+      # built by the same wrapper this script generates today, and its
       # sources already hold the patch set of the time, so the objects are reused
       # rather than paying the two hours again -- the workflow only hands such a
       # tree over once, and the bookkeeping starts from here on. A tree for a
@@ -495,12 +526,13 @@ stage_node() {
 
     if [ "$reused" = 1 ]; then
       say "reusing the build tree: $(find out -name '*.o' 2>/dev/null | wc -l | tr -d ' ') objects already compiled"
+      retarget_legacy_toolchain "$source_dir" "$toolchain_dir"
     else
       rm -rf out
     fi
     mkdir -p out
-    printf '{"wrapper": %s, "patches": "%s", "node": "%s"}\n' \
-      "$wrapper_version" "$patch_set" "$node_version" > "out/$stamp_file"
+    printf '{"wrapper": "%s", "patches": "%s", "node": "%s"}\n' \
+      "$wrapper_hash" "$patch_set" "$node_version" > "out/$stamp_file"
 
     # `--dest-os=mac` is the right answer even though the target is iOS. Node's
     # configure passes the dest-os straight to gyp as `OS`, and gyp knows only
@@ -510,12 +542,19 @@ stage_node() {
     # `-D_LARGEFILE_SOURCE`. Naming mac keeps the platform layer native and
     # leaves the actual target to the compiler wrapper, which is the only place
     # that knows a build is split between a macOS host and an iOS target.
-    if ! configure_node --dest-os=mac 2>"$work_dir/configure-mac.log"; then
-      say "Node's configure does not accept --dest-os=mac; retrying as an ios build"
-      cat "$work_dir/configure-mac.log" >&2
-      rm -rf out
-      configure_node --dest-os=ios \
-        || fail "configure failed both ways — read $work_dir/configure-mac.log"
+    # configure is what makes a reused tree expensive: it rewrites the generated
+    # makefiles and their prerequisites, so make then rebuilds everything below
+    # them. A tree whose stamp matches was configured by these exact wrappers, so
+    # its out/ is already the output of this configuration and configure is
+    # skipped.
+    if [ "$reused" = 0 ]; then
+      if ! configure_node --dest-os=mac 2>"$work_dir/configure-mac.log"; then
+        say "Node's configure does not accept --dest-os=mac; retrying as an ios build"
+        cat "$work_dir/configure-mac.log" >&2
+        rm -rf out
+        configure_node --dest-os=ios \
+          || fail "configure failed both ways — read $work_dir/configure-mac.log"
+      fi
     fi
 
     # The snapshot generator is a host tool; everything else is the iOS target.
