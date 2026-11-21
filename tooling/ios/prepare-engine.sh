@@ -104,13 +104,13 @@ stage_harness() {
   # `deploy` copies the built package, so the artifacts have to be current.
   #
   # `--frozen-lockfile` is the right default: a lockfile that disagrees with the
-  # manifests means the tree being built is not the tree that was tested. This
-  # repository has one such disagreement today -- pnpm-lock.yaml predates every
-  # package under packages/reverse/, so it carries no importer entries for them --
-  # and a device build must not be blocked on it: staging the harness needs working
-  # node_modules, and the lockfile this step rewrites lives only on the runner.
-  # Report it loudly rather than failing, so the mismatch is fixed where it belongs
-  # (a regenerated, committed lockfile) instead of being rediscovered here.
+  # manifests means the tree being built is not the tree that was tested. A device
+  # build must not be blocked on such a disagreement, though -- staging the harness
+  # needs working node_modules, and the lockfile this step rewrites lives only on
+  # the runner -- so the mismatch is reported loudly instead of failing, and the
+  # install is retried without the lockfile. The proper fix is what was done for
+  # packages/reverse/: regenerate the lockfile and commit it (that is also what the
+  # e2e workflow's `Install (immutable)` step requires).
   if ! pnpm install --frozen-lockfile; then
     say "pnpm-lock.yaml does not match the manifests; installing without it"
     printf 'prepare-engine: pnpm-lock.yaml has no entries for packages/reverse/* and packages/bundle/reverse;\n' >&2
