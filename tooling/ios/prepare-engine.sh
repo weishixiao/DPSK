@@ -33,6 +33,15 @@
 #
 # Set NODE_VERSION to pin a release (default: the version in `.nvmrc`, else
 # 24.22.3). The harness requires node >= 24.9.
+#
+# The build tree -- the unpacked Node source and its out/ -- is the expensive part
+# of this script, so CI caches it and hands it back on the next run. Whether it may
+# be reused is decided here, not by the cache key: the tree carries a stamp
+# (`out/.dpsk-ios-tree`) recording the wrapper version and the patch set it was
+# built from. A matching wrapper reuses every object; a changed patch set puts the
+# pristine sources back first and lets `make` rebuild only what moved; a changed
+# wrapper discards the objects. `wrapper_version` below is what a wrapper change
+# bumps, `tooling/ios/tree-cache-key` is what a layout or Node-version change does.
 
 set -euo pipefail
 
@@ -44,6 +53,21 @@ vendor_dir="$root/app/ios/Vendor/node"
 work_dir="${NODE_BUILD_DIR:-$root/app/ios/Vendor/node/src}"
 node_version="${NODE_VERSION:-24.22.3}"
 ios_min="16.0"
+
+# The build tree -- the unpacked Node source plus out/ -- is the expensive half of
+# this script: a cold cross-build compiles V8 twice and runs about two hours on
+# the three-core runner CI uses. It is cached and reused (see ios.yml), and these
+# two values are what make reuse safe.
+#
+# `wrapper_version` is bumped whenever the compiler wrapper below changes what it
+# passes: flags, defines, sysroot choice. Objects built by a different wrapper
+# must not be linked into the app, so a mismatch throws the tree away instead --
+# slow, but only when a person deliberately changed the build.
+wrapper_version=3
+
+# Where the unpatched copy of every file a patch rewrites is kept, relative to the
+# Node source tree. See remember_pristine.
+pristine_dir=.dpsk-ios-pristine
 jobs=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 node_only=0
@@ -257,6 +281,77 @@ report_first_failure() {
   return 0
 }
 
+# ── what the build tree may keep, and what has to be put back ───────────────
+
+# The patch set as one string. Every edit of any patch file changes it; that is
+# the signal that a reused tree has to have its pristine copies restored before
+# the current set is applied again.
+patches_fingerprint() {
+  local file
+  for file in "$root"/tooling/ios/patches/*.patch; do
+    [ -f "$file" ] || continue
+    basename "$file"
+    digest <"$file"
+  done | digest
+}
+
+# macOS ships `shasum`, Alpine `sha256sum`; only the 64 hex characters matter.
+digest() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    sha256sum | cut -d' ' -f1
+  fi
+}
+
+# The files a patch file rewrites, as paths relative to the source tree.
+patch_targets() {
+  sed -n 's|^+++ b/||p' "$1" | sed 's/[[:space:]].*$//'
+}
+
+# Record the unpatched text of every file the patches are about to touch, once.
+# A fresh tree stores the originals; a reused tree already has them and is left
+# alone, so what is stored is always unpatchable-clean rather than whatever the
+# last run left behind.
+remember_pristine() {
+  local source_dir="$1" file rel
+  mkdir -p "$source_dir/$pristine_dir"
+  {
+    # `patch_ios_deps` rewrites this one with sed; it belongs to the same set.
+    printf 'deps/cares/config/darwin/ares_config.h\n'
+    for file in "$root"/tooling/ios/patches/*.patch; do
+      [ -f "$file" ] && patch_targets "$file"
+    done
+  } | while IFS= read -r rel; do
+    if [ -n "$rel" ] && [ -f "$source_dir/$rel" ] && [ ! -f "$source_dir/$pristine_dir/$rel" ]; then
+      mkdir -p "$(dirname "$source_dir/$pristine_dir/$rel")"
+      cp "$source_dir/$rel" "$source_dir/$pristine_dir/$rel"
+    fi
+  done || true   # `read` ends on EOF with a non-zero status; `set -e` would exit
+}
+
+# Put the pristine copies back. This is what makes a *removed* patch actually go
+# away: without it the old text would stay in the tree for ever, and `make` would
+# happily link objects built from it.
+restore_pristine() {
+  local source_dir="$1" rel
+  [ -d "$source_dir/$pristine_dir" ] || return 0
+  ( cd "$source_dir/$pristine_dir" && find . -type f -print ) | while IFS= read -r rel; do
+    rel="${rel#./}"
+    if [ -f "$source_dir/$pristine_dir/$rel" ]; then
+      cp "$source_dir/$pristine_dir/$rel" "$source_dir/$rel"
+      printf 'unpatched %s\n' "$rel"
+    fi
+  done || true
+}
+
+# The tree's own description of how it was built, written inside out/ so that
+# `rm -rf out` also forgets it. One line of JSON, read back with sed.
+stamp_file=.dpsk-ios-tree
+read_stamp() {
+  sed -n "s/.*\"$2\": *\"\{0,1\}\([^\",]*\)\"\{0,1\}.*/\1/p" "$1/out/$stamp_file" 2>/dev/null | head -n 1
+}
+
 # c-ares carries a checked-in macOS configuration (`config/darwin`) that Node
 # reuses verbatim for an iOS target. Two of its macOS truths are untrue on iOS:
 # the iPhoneOS SDK has no `sys/random.h`, and libSystem exports no `getentropy`.
@@ -346,18 +441,49 @@ stage_node() {
     export CXX_target="$toolchain_dir/cxx"
     export LINK_target="$toolchain_dir/cxx"
 
+    local patch_set reused=0
+    patch_set=$(patches_fingerprint)
+
+    # A restored tree is reused whenever it was built by this same wrapper: that
+    # is the one thing whose change makes every object wrong. The patch set is
+    # different -- patches rewrite a handful of files, so the tree is reused and
+    # `make` rebuilds exactly what moved, which takes seconds instead of the two
+    # hours a discarded tree costs. That is the whole point of the stamp.
+    #
+    # The two decisions are independent: a wrapper change discards the objects but
+    # leaves the sources, so the patch set still has to be put back to its pristine
+    # text before the current patches go on -- otherwise a *removed* patch would
+    # live on in the tree and make would link objects built from it.
+    if [ -f "out/$stamp_file" ]; then
+      if [ "$(read_stamp "$source_dir" wrapper)" = "$wrapper_version" ]; then
+        reused=1
+      else
+        say "the compiler wrapper changed since this tree was built; the objects are rebuilt from scratch"
+      fi
+      if [ "$(read_stamp "$source_dir" patches)" != "$patch_set" ]; then
+        [ -d "$source_dir/$pristine_dir" ] \
+          || fail "the restored tree was built by an older script and carries no pristine sources; delete the node-tree cache (or bump tooling/ios/tree-cache-key) and build again"
+        say "the patch set changed since this tree was built; restoring the pristine sources"
+        restore_pristine "$source_dir"
+      fi
+    fi
+
+    # Only a fresh tree is guaranteed unpatched; on a reused one the copies came
+    # with the tree, and re-recording would capture patched text as pristine.
+    if [ "$reused" = 0 ] && [ ! -d "$source_dir/$pristine_dir" ]; then
+      remember_pristine "$source_dir"
+    fi
     patch_ios_deps "$source_dir"
     patch_ios_sources "$source_dir"
 
-    # A restored build tree means the objects match this exact wrapper and patch
-    # set (the cache key says so), so throwing them away would pay for V8 twice
-    # again. Anything else starts clean, because a half-built out/ from a
-    # different configuration is worse than a slow build.
-    if [ "${NODE_REUSE_TREE:-0}" = 1 ] && [ -d out ]; then
-      say "reusing the restored build tree"
+    if [ "$reused" = 1 ]; then
+      say "reusing the build tree: $(find out -name '*.o' 2>/dev/null | wc -l | tr -d ' ') objects already compiled"
     else
       rm -rf out
     fi
+    mkdir -p out
+    printf '{"wrapper": %s, "patches": "%s", "node": "%s"}\n' \
+      "$wrapper_version" "$patch_set" "$node_version" > "out/$stamp_file"
 
     # `--dest-os=mac` is the right answer even though the target is iOS. Node's
     # configure passes the dest-os straight to gyp as `OS`, and gyp knows only

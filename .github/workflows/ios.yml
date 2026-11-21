@@ -2,6 +2,11 @@ name: ios
 
 on:
   workflow_dispatch:
+  # Twice a week, restore the build-tree cache so GitHub does not evict it: an
+  # entry unused for seven days is dropped, and rebuilding it costs the two hours
+  # this cache exists to avoid. Nothing is compiled -- the job only restores.
+  schedule:
+    - cron: '17 3 * * 1,4'
   push:
     branches: [main]
     paths:
@@ -14,12 +19,20 @@ on:
       - 'tooling/ios/**'
       - '.github/workflows/ios.yml'
 
+# A cold engine build compiles V8 twice and takes about two hours on a 3-core
+# runner. Cancelling it on every push would throw that away *and* lose the build
+# tree it was going to cache, so a push waits its turn instead: the running build
+# finishes, caches its tree, and the queued one starts warm.
 concurrency:
   group: ios-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
+  # Reading the cache list back after a save, so a silently failed save (the
+  # action continues on error) is reported on the run page instead of being
+  # discovered two hours into the next build.
+  actions: read
 
 jobs:
   # What the device build links and serves. Both halves are reproducible from
@@ -57,28 +70,30 @@ jobs:
           key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
       # The unpacked tree and its objects are the expensive part: a cold build
       # compiles V8 twice and runs about two hours. Keeping them means a retry
-      # after a failure in a later step resumes instead of starting over -- which
-      # is exactly how the header-staging bug cost a second full build.
+      # after a failure in a later step resumes instead of starting over.
       #
-      # The key deliberately does NOT hash prepare-engine.sh: most edits to that
-      # file are in the staging half (harness deploy, header copy, error text) and
-      # leave every object valid, yet hashing the whole file threw the cache away
-      # twice in a row. What makes an object stale is the compiler wrapper and the
-      # patches, so the key carries the patches and a version number that a person
-      # bumps when the wrapper or its flags change. Bump v2 -> v3 when they do.
+      # The key hashes exactly one file, tooling/ios/tree-cache-key, and nothing
+      # else: a person writes in it what a bump means (a Node version move, a new
+      # staging layout). It deliberately does NOT hash prepare-engine.sh -- most
+      # edits to that file are in the staging half and leave every object valid --
+      # and it does NOT hash the patches either. `prepare-engine.sh` decides for
+      # itself whether a restored tree may be reused: it reads the stamp the tree
+      # carries (`out/.dpsk-ios-tree`: wrapper version + patch set), reuses the
+      # objects when the wrapper matches, puts back the pristine sources when the
+      # patch set changed, and discards the tree only when the wrapper moved.
+      # So a patch edit costs a few seconds of `make`, never two hours.
       - name: Restore the Node build tree
         id: tree
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/node-build
-          key: node-tree-v2-${{ hashFiles('tooling/ios/patches/**') }}-${{ github.run_id }}
+          key: node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-${{ github.run_id }}
           restore-keys: |
-            node-tree-v2-${{ hashFiles('tooling/ios/patches/**') }}-
+            node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-
       - name: Build Node for iOS and deploy the harness
         if: steps.staged.outputs.cache-hit != 'true'
         env:
           NODE_BUILD_DIR: ${{ runner.temp }}/node-build
-          NODE_REUSE_TREE: ${{ steps.tree.outputs.cache-matched-key != '' && '1' || '0' }}
         run: |
           set -o pipefail
           tooling/ios/prepare-engine.sh 2>&1 | tee "$RUNNER_TEMP/engine.log"
@@ -89,7 +104,22 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/node-build
-          key: node-tree-v2-${{ hashFiles('tooling/ios/patches/**') }}-${{ github.run_id }}
+          key: node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-${{ github.run_id }}
+      # That save continues on error, so a failed upload would stay invisible
+      # until the next build paid for two hours of V8 again. Ask the API whether
+      # the key is really there and put the answer on the run page.
+      - name: Check that the build tree was saved
+        if: always() && steps.staged.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          key="node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-${{ github.run_id }}"
+          if gh api "repos/${{ github.repository }}/actions/caches?per_page=100" \
+               --jq '.actions_caches[].key' | grep -qxF "$key"; then
+            echo "the build tree is cached as $key"
+          else
+            echo "::warning title=tree cache::the build tree was not saved as $key — the next run pays for a cold build"
+          fi
       # The job log needs a sign-in to read; annotations show on the run page
       # itself. A failed cross-build is diagnosed from the last screenful.
       - name: Leave the tail of a failed build on the run page
@@ -130,3 +160,29 @@ jobs:
           path: ${{ runner.temp }}/ipa/DPSK.ipa
           if-no-files-found: error
           retention-days: 14
+
+  # GitHub evicts a cache entry that nothing has read in seven days, which would
+  # hand the next device build a cold tree. This job restores it twice a week and
+  # compiles nothing: a restore counts as use.
+  warm:
+    name: keep the build tree cache warm
+    if: github.event_name == 'schedule'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the build tree
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/node-build
+          key: node-tree-warm-${{ github.run_id }}
+          restore-keys: |
+            node-tree-${{ runner.os }}-${{ hashFiles('tooling/ios/tree-cache-key') }}-
+      - name: Report what the next build will start from
+        run: |
+          if [ -d "$RUNNER_TEMP/node-build" ]; then
+            echo "restored $(du -sh "$RUNNER_TEMP/node-build" | cut -f1)"
+            find "$RUNNER_TEMP/node-build" -maxdepth 1 -type d -name 'node-*' -print
+          else
+            echo "::warning title=tree cache::nothing to restore — the next device build is cold"
+          fi

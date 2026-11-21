@@ -1,0 +1,19 @@
+# Key material for the Node build-tree cache in .github/workflows/ios.yml.
+#
+# The tree -- the unpacked Node source plus out/, objects included -- is the part
+# of a device build that costs hours, so CI caches it and reuses it. Only its
+# SHA-256 enters the cache key, which is why this file exists at all: a reader can
+# see what a bump means without decoding a hash.
+#
+# Bump the line below when the tree must not be reused:
+#
+#   * Node's version moves (different sources, different objects);
+#   * `prepare-engine.sh` changes the *layout* of what it stages inside the tree;
+#   * the compiler wrapper changes in a way `wrapper_version` in that script does
+#     not already cover.
+#
+# A patch-set change does NOT need a bump: the tree records the patch set it was
+# built from and restores its own pristine sources before re-applying. Editing
+# this file is the deliberate, rare invalidation; a stale tree would otherwise
+# cost two hours to discover.
+tree-3 node-24.22.3
