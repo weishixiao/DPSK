@@ -136,6 +136,9 @@ jobs:
       # DSH_E2E_BASE_URL overrides it (a relay/mirror that speaks the same
       # Anthropic-compatible protocol). A repo variable, not a `.env`, keeps the
       # endpoint explicit and lets the run switch back by deleting the variable.
+      # A mirror cannot serve the suites that pin the official endpoint or use
+      # official-only surfaces, so DSH_E2E_SUITE=relay selects the reduced
+      # profile (vitest.e2e.relay.config.ts) instead of failing on 401s.
       # The secret is scoped to this step (and preflight) only — never exposed to
       # checkout/setup/install.
       - name: E2E tests (real DeepSeek API)
@@ -145,4 +148,4 @@ jobs:
           DSH_PRIMARY_RUNTIME: ${{ github.workspace }}/.cache/e2e-office/primary-runtime
           DSH_E2E_MAX_WORKERS: 6
           DSH_EXAMPLE_MODE: lib
-        run: pnpm run test:e2e
+        run: ${{ vars.DSH_E2E_SUITE == 'relay' && 'pnpm run test:e2e:relay' || 'pnpm run test:e2e' }}
