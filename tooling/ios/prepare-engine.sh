@@ -112,7 +112,20 @@ stage_harness() {
     printf 'prepare-engine: regenerating it on the runner. Commit the regenerated lockfile to restore a frozen install.\n' >&2
     pnpm install --no-frozen-lockfile
   fi
+  # The app's window is a WKWebView pointed at the harness's own server, so the
+  # deploy has to carry a built page: `apps/web/dist` is vite output, gitignored
+  # and never produced by `build:lib:host`. Three steps, in this order —
+  # `build:lib:client` emits the client-face `lib/` products the vite entry
+  # imports ("workspace packages are consumed as built lib products", see
+  # apps/web/vite.config.ts), and `build:web` is the vite build itself. Without
+  # the dist the server answers every page request with a 404 and the window
+  # stays blank, with no engine-log line to say why: the missing page is a
+  # request-time concern of the frontend-static owner, not a boot failure.
   pnpm run build:lib:host
+  pnpm run build:lib:client
+  pnpm run build:web
+  [ -f apps/web/dist/index.html ] \
+    || fail "build:web produced no apps/web/dist/index.html — the app window would load a blank page"
 
   rm -rf "$engine_dir/runtime/harness"
   mkdir -p "$engine_dir/runtime"
