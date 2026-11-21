@@ -236,6 +236,13 @@ if [ "$kind" = host ]; then
 fi
 suffix[${#suffix[@]}]="-g0"
 
+# ccache, when the run put one on PATH (see stage_node): a rebuild that make
+# decides to do -- a moved SDK, a regenerated header -- then replays cached objects
+# instead of compiling for hours. It sits here rather than in the environment
+# because gyp calls this script, not a compiler.
+if [ -n "${DPSK_CCACHE:-}" ] && [ -x "${DPSK_CCACHE:-}" ]; then
+  exec "$DPSK_CCACHE" "$real" "${prefix[@]}" ${args[@]+"${args[@]}"} "${suffix[@]}"
+fi
 exec "$real" "${prefix[@]}" ${args[@]+"${args[@]}"} "${suffix[@]}"
 WRAPPER
   sed -i '' \
@@ -340,6 +347,36 @@ restore_pristine() {
   done || true
 }
 
+# make decides by mtime, and a cache round trip does not promise to keep them: one
+# file that comes back newer than the object built from it costs a rebuild of
+# everything below it. Measured on run 23 -- 5878 objects present, and make still
+# started 2133 compile commands. So a reused tree has every file stamped with one
+# fixed time; the patches then apply on top and are, by construction, newer than
+# every object they affect. That is exactly the rebuild make should do, and nothing
+# more.
+normalize_tree_mtimes() {
+  local source_dir="$1"
+  find "$source_dir" -type f -exec touch -t 200001010000 {} + 2>/dev/null || true
+  return 0
+}
+
+# `patch` keeps the original file's mtime, so after normalize_tree_mtimes a patched
+# source still looks older than the object built from it -- and make would link the
+# old object. Mark the files the patch set rewrites as changed, which is what they
+# are. Only a handful of files are involved, so this costs a handful of rebuilds.
+mark_patched_sources_changed() {
+  local source_dir="$1" file rel
+  {
+    printf 'deps/cares/config/darwin/ares_config.h\n'
+    for file in "$root"/tooling/ios/patches/*.patch; do
+      [ -f "$file" ] && patch_targets "$file"
+    done
+  } | while IFS= read -r rel; do
+    [ -n "$rel" ] && [ -f "$source_dir/$rel" ] && touch "$source_dir/$rel"
+  done || true
+  return 0
+}
+
 # A tree restored from a cache written before the wrapper path became stable names
 # the old mktemp directory in every generated makefile. Point those at the current
 # wrapper instead of re-running configure: configure rewrites the generated
@@ -442,6 +479,16 @@ stage_node() {
   # Xcode or SDK move that changes a sysroot path.
   local wrapper_hash
   wrapper_hash=$( { digest <"$toolchain_dir/cc"; digest <"$toolchain_dir/cxx"; } | digest )
+
+  # ccache is optional and lives inside the tree, so it is cached with it: the
+  # workflow installs it, and a machine without it just compiles as before.
+  DPSK_CCACHE=$(command -v ccache 2>/dev/null || true)
+  export DPSK_CCACHE
+  export CCACHE_DIR="$work_dir/ccache"
+  export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2G}"
+  if [ -n "$DPSK_CCACHE" ]; then
+    say "ccache $("$DPSK_CCACHE" --version | head -n 1 | cut -d' ' -f2) at $CCACHE_DIR"
+  fi
   # The tarball unpacks to a directory whose name is not simply the version
   # (and a re-run may find an older tree there): ask the tree, never guess it.
   node_source() {
@@ -521,8 +568,18 @@ stage_node() {
     if [ "$reused" = 0 ] && [ ! -d "$source_dir/$pristine_dir" ]; then
       remember_pristine "$source_dir"
     fi
+    if [ "$reused" = 1 ]; then
+      # Before the patches: everything in a reused tree is one fixed time, so that
+      # nothing but what a patch rewrites can look stale to make.
+      normalize_tree_mtimes "$source_dir"
+    fi
     patch_ios_deps "$source_dir"
     patch_ios_sources "$source_dir"
+    if [ "$reused" = 1 ]; then
+      # `patch` keeps the original mtime, so the files it rewrote would still look
+      # older than their objects; mark them changed, which is what they are.
+      mark_patched_sources_changed "$source_dir"
+    fi
 
     if [ "$reused" = 1 ]; then
       say "reusing the build tree: $(find out -name '*.o' 2>/dev/null | wc -l | tr -d ' ') objects already compiled"

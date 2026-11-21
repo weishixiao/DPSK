@@ -102,6 +102,10 @@ jobs:
           NODE_BUILD_DIR: ${{ runner.temp }}/node-build
         run: |
           set -o pipefail
+          # A rebuild that make decides to do (a moved SDK, a regenerated header)
+          # is a cache replay with this instead of hours of compiling. It lives
+          # inside the build tree, so it is cached and restored with it.
+          command -v ccache >/dev/null || brew install ccache
           tooling/ios/prepare-engine.sh 2>&1 | tee "$RUNNER_TEMP/engine.log"
       # Saved even when the job fails: that is the case this cache exists for.
       - name: Keep the build tree for the next attempt
