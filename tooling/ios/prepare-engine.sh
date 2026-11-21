@@ -356,13 +356,13 @@ restore_pristine() {
 # more.
 normalize_tree_mtimes() {
   local source_dir="$1"
-  # Two tiers, not one: sources at 2000, everything under out/ at 2030. Equal
+  # Two tiers, not one: sources at 2000, everything under out/ at 2001. Equal
   # timestamps are the subtle case -- the archive keeps nanoseconds that `touch -t`
   # zeroes, so "equal" can still compare as older and rebuild the world. Strictly
-  # newer is not ambiguous.
+  # newer is not ambiguous, and both are in the past so nothing reports clock skew.
   find "$source_dir" -path "$source_dir/out" -prune -o -type f \
     -exec touch -t 200001010000 {} + 2>/dev/null || true
-  find "$source_dir/out" -type f -exec touch -t 203001010000 {} + 2>/dev/null || true
+  find "$source_dir/out" -type f -exec touch -t 200101010000 {} + 2>/dev/null || true
   return 0
 }
 
@@ -378,9 +378,9 @@ mark_patched_sources_changed() {
       [ -f "$file" ] && patch_targets "$file"
     done
   } | while IFS= read -r rel; do
-    # 2040: newer than every object (2030), so make rebuilds exactly what a patch
+    # 2002: newer than every object (2001), so make rebuilds exactly what a patch
     # changed and nothing else.
-    [ -n "$rel" ] && [ -f "$source_dir/$rel" ] && touch -t 204001010000 "$source_dir/$rel"
+    [ -n "$rel" ] && [ -f "$source_dir/$rel" ] && touch -t 200201010000 "$source_dir/$rel"
   done || true
   return 0
 }
@@ -655,6 +655,12 @@ stage_node() {
   install_name_tool -id "@rpath/libnode.dylib" "$vendor_dir/lib/libnode.dylib"
   rm -rf "$vendor_dir/include/node"
   cp -R "$header_layout" "$vendor_dir/include/node"
+
+  if [ -n "${DPSK_CCACHE:-}" ]; then
+    # The numbers that decide whether the next run is minutes or hours.
+    say "ccache after the build"
+    "$DPSK_CCACHE" --show-stats 2>/dev/null | sed -n '1,12p' || true
+  fi
 
   say "linking target check"
   lipo -info "$vendor_dir/lib/libnode.dylib"
