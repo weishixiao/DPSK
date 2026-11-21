@@ -77,15 +77,18 @@
 # already gated to the desktop profile by the web bundle, so a second disable
 # here would only restate it — and would drop the config the desktop build uses.
 #
-# ── open item: preset rows ──────────────────────────────────────────────────
+# ── preset rows: the neighbouring file ──────────────────────────────────────
 #
-# Every shipped preset (`minimal`, `standard`, `cordis`, `ptc`) mounts
-# `tool-bash` and `tool-pwsh`, and `minimal` mounts the `terminal-*` family. Those
-# rows are in the preset's own scope, so this overlay cannot disable them: the
-# model still sees a `bash` tool on the phone, and calling it fails with a spawn
-# error. Fixing that properly means an iOS preset in the web bundle's
-# `presets/` (a product change in `packages/`), or a preset selection flag the
-# CLI does not have today. Until then the failure is loud per call, not silent.
+# The shipped `standard` preset mounts `tool-bash` and `tool-pwsh`, and preset
+# rows live in their own scope: nothing named in this file can remove them, so the
+# model would still see a `bash` tool that can only fail with a spawn error.
 #
-# Session persistence is a packaging gap, not a patch row: see
-# app/ios/Engine/README.md.
+# That is what `ios-preset.patch.yml` is for. It restates the `preset-standard`
+# declaration without those two entries — a patch replaces a row's whole `config`,
+# so the list has to be written out — and `host.mjs` passes it after this file.
+# The file is generated from the shipped preset by `tooling/ios/make-ios-preset.py`
+# (`--check` in CI reports a shipped preset that changed underneath it); edit the
+# generator, not the output.
+#
+# Session persistence is a packaging gap, not a patch row: `prepare-engine.sh`
+# builds native/system's flock addon for iOS. See app/ios/Engine/README.md.

@@ -37,6 +37,11 @@ jobs:
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
+      # The iOS copy of the `standard` preset is generated from the shipped one;
+      # this is the only thing that notices when the shipped preset moves and the
+      # copy would silently drift back to mounting tools a phone cannot run.
+      - name: Check the generated preset override
+        run: tooling/ios/make-ios-preset.py --check
       - uses: pnpm/action-setup@v5.0.0
       - uses: actions/setup-node@v4
         with:

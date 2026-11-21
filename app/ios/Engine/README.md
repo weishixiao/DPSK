@@ -98,17 +98,22 @@ providers，`tool-fs-search`、`workspace-changes`、`terminal-bash`、PTC 运�
    未验证的部分：`flock` 在 iOS libSystem 上的实际行为、ad-hoc 签名后的 `.node`
    在真机上能否加载、重签 `.ipa` 的工具是否会把它一并封进 CodeResources。这三条
    都只有真机能回答；失败形态是第一次落盘报 addon 加载错误，`engine.log` 里能看到。
-2. **工具行的真正来源是 preset，覆盖层管不到。** `tool-bash`、`tool-pwsh`、
-   `tool-fs-search` 这些在 web bundle 的宿主平面上被关掉，再由每个 preset 在自己的
-   作用域里重新挂载——`minimal`、`standard`、`cordis`、`ptc` 四个 preset 全部带
-   `tool-bash`／`tool-pwsh`，`minimal` 还带 `terminal-*`。`--patch` 到不了 preset
-   内部，所以手机上模型仍然能看到 `bash` 工具，调用时得到 spawn 报错。正经修法是在
-   `packages/bundle/web-app/presets/` 加一个 iOS preset（属于 `packages/` 的产品
-   改动），CLI 目前没有选 preset 的启动参数。另外 `terminal-controller` 被关，
-   意味着不能用 `minimal` preset，默认的 `standard` 才和这份覆盖层配套。
+2. **工具行来自 preset，`ios.patch.yml` 到不了那里——所以有第二个文件。**
+   `tool-bash`、`tool-pwsh` 由每个 preset 在自己的作用域里挂载，而 patch 只能按
+   Loader 行 id 覆盖，且一覆盖就换掉整份 `config`。`ios-preset.patch.yml` 因此把
+   `preset-standard` 整行重述一遍、只删掉这两个进程工具（iOS 沙箱里没有
+   fork/exec，留着也只会每次调用报 spawn 错）。它是
+   `tooling/ios/make-ios-preset.py` 从
+   `packages/bundle/web-app/presets/standard.patch.yml` 生成的：上游 preset 一改，
+   `--check` 就会失败，提醒重新生成，避免手抄的副本悄悄漂移。`host.mjs` 先传
+   `ios.patch.yml`、再传这一份；文件缺失时跳过（退化成模型多一个跑不动的 `bash`）。
+   仍未解决：`minimal` preset 还带 `terminal-*`，所以只能用 `standard`；
+   要换 preset 得先在 web bundle 里加一个 iOS 版。
 3. **没在真机上跑过。** 这台设备没有 Node、没有 Xcode，`prepare-engine.sh`、
    Xcode 链接、`node::Start` 的返回、`--jitless` 下 harness 的实际速度，全部只有
    纸面推演。上面第 1、2 条同样没跑过——是从源码与 composition 读出来的结论。
+   第 2 条唯一验证过的是结构：生成的 YAML 能解析、插件条目 34→32（只少那两个）、
+   每一行都能逐字追回上游文件；它能否被 Loader 接受，只有真机知道。
 
 ## 排查
 

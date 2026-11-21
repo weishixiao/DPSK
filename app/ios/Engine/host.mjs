@@ -12,6 +12,7 @@
 //   Engine/
 //     host.mjs              this file
 //     ios.patch.yml         the loader overlay that drops what iOS cannot run
+//     ios-preset.patch.yml  the shipped `standard` preset minus the process tools
 //     runtime/harness/      `pnpm deploy` of @deepseek-ai/dsh: lib/bin.js + node_modules
 //
 // Everything the environment supplies comes from EngineRuntime.swift:
@@ -20,7 +21,7 @@
 //   DSH_HOME          harness state directory (Application Support/dsh)
 //   HOME, TMPDIR      the app container's, since the bundle is read-only
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -28,6 +29,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const engineRoot = process.env.DPSK_ENGINE_ROOT ?? dirname(fileURLToPath(import.meta.url))
 const binary = join(engineRoot, 'runtime', 'harness', 'lib', 'bin.js')
 const patch = join(engineRoot, 'ios.patch.yml')
+// The preset override restates a row the bundle inserts, so it has to come after
+// the overlay; a missing file is skipped rather than fatal, because the overlay
+// alone still boots (the model just keeps a `bash` tool that cannot run).
+const presetPatch = join(engineRoot, 'ios-preset.patch.yml')
 const port = Number(process.env.DPSK_PORT ?? 8799)
 
 const home = process.env.DSH_HOME
@@ -72,6 +77,7 @@ process.argv = [
   binary,
   '--profile', 'web',
   '--patch', patch,
+  ...(existsSync(presetPatch) ? ['--patch', presetPatch] : []),
   '--host', '127.0.0.1',
   '--port', String(port),
   '--no-open',
