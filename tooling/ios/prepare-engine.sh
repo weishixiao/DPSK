@@ -356,7 +356,13 @@ restore_pristine() {
 # more.
 normalize_tree_mtimes() {
   local source_dir="$1"
-  find "$source_dir" -type f -exec touch -t 200001010000 {} + 2>/dev/null || true
+  # Two tiers, not one: sources at 2000, everything under out/ at 2030. Equal
+  # timestamps are the subtle case -- the archive keeps nanoseconds that `touch -t`
+  # zeroes, so "equal" can still compare as older and rebuild the world. Strictly
+  # newer is not ambiguous.
+  find "$source_dir" -path "$source_dir/out" -prune -o -type f \
+    -exec touch -t 200001010000 {} + 2>/dev/null || true
+  find "$source_dir/out" -type f -exec touch -t 203001010000 {} + 2>/dev/null || true
   return 0
 }
 
@@ -372,7 +378,9 @@ mark_patched_sources_changed() {
       [ -f "$file" ] && patch_targets "$file"
     done
   } | while IFS= read -r rel; do
-    [ -n "$rel" ] && [ -f "$source_dir/$rel" ] && touch "$source_dir/$rel"
+    # 2040: newer than every object (2030), so make rebuilds exactly what a patch
+    # changed and nothing else.
+    [ -n "$rel" ] && [ -f "$source_dir/$rel" ] && touch -t 204001010000 "$source_dir/$rel"
   done || true
   return 0
 }
