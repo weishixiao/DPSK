@@ -24,7 +24,10 @@
 #import "NodeBridge.h"
 
 #include <node.h>
+#include <signal.h>
+#include <sys/resource.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -47,6 +50,22 @@ int RejectStartup(const char *code) {
   // Never echo paths or arguments: this line can reach a log the user shares.
   std::fprintf(stderr, "%s: invalid embedded Node startup\n", code);
   return DPSK_NODE_REJECTED;
+}
+
+/// Raise RLIMIT_NOFILE to what the process can actually have.
+///
+/// Node raises this only when it owns the process, and kNoAdjustResourceLimits
+/// says it does not. An iOS app starts far below what a Node runtime plus a
+/// socket server wants, and the failure when it runs out is a write to a dead fd
+/// that takes the whole app down.
+void RaiseFileLimit() {
+  rlimit limit{};
+  if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return;
+  // Darwin refuses more than OPEN_MAX even with the hard limit at infinity.
+  const rlim_t wanted = std::min<rlim_t>(limit.rlim_max, 10240);
+  if (limit.rlim_cur >= wanted) return;
+  limit.rlim_cur = wanted;
+  setrlimit(RLIMIT_NOFILE, &limit);
 }
 
 /// Run one Environment to completion. Called on the engine thread.
@@ -116,6 +135,11 @@ int DPSKNodeStart(NSArray<NSString *> *arguments) {
       running = true;
       stop_requested = false;
     }
+    // A write to a socket the other end closed would otherwise raise SIGPIPE
+    // and end the app: Node's own signal setup is off, since the process is
+    // not Node's to configure.
+    signal(SIGPIPE, SIG_IGN);
+    RaiseFileLimit();
 
     int status = 0;
     if (!initialization) {
@@ -127,6 +151,9 @@ int DPSKNodeStart(NSArray<NSString *> *arguments) {
           node::ProcessInitializationFlags::kDisableNodeOptionsEnv,
           node::ProcessInitializationFlags::kNoParseGlobalDebugVariables,
           node::ProcessInitializationFlags::kNoAdjustResourceLimits,
+          // Large pages are not something an iOS app can ask for, and Node's
+          // attempt is a diagnostic noise source rather than a gain.
+          node::ProcessInitializationFlags::kNoUseLargePages,
       });
       for (const auto &error : initialization->errors()) std::fprintf(stderr, "%s\n", error.c_str());
       if (initialization->early_return()) {
