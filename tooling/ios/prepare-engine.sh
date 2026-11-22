@@ -298,8 +298,11 @@ harness_missing_peers() {
 # unstaged while this function reported no gaps.
 harness_first_party_packages() {
   local harness="$1" dir
-  for dir in "$harness"/node_modules/* "$harness"/node_modules/@*/* \
-             "$harness"/node_modules/.pnpm/node_modules/* "$harness"/node_modules/.pnpm/node_modules/@*/*; do
+  # Only the packages this repository builds. A third-party package's
+  # dependencies are the deploy's business, and there is no workspace copy to
+  # stage in their place -- staging one is a hard failure, not a repair.
+  for dir in "$harness"/node_modules/@deepseek-ai/* \
+             "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*; do
     case "${dir##*/}" in
       .pnpm|.bin|node_modules) continue ;;
     esac
@@ -330,6 +333,9 @@ harness_missing_copied_dependencies() {
         // offer it -- the platform prebuilds are exactly that.
         for (const key of ["dependencies", "peerDependencies"]) {
           for (const name of Object.keys(manifest[key] ?? {})) {
+            // Only names this repository can stage. A missing third-party package
+            // is the problem of the deploy and has no workspace source to copy.
+            if (!name.startsWith("@deepseek-ai/")) continue;
             if (!fs.existsSync(path.join(harness, "node_modules", name))) missing.add(name);
           }
         }
