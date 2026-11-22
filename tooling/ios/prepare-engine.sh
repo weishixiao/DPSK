@@ -321,21 +321,23 @@ harness_missing_copied_dependencies() {
       const path = require("path");
       const harness = process.argv[1];
       const missing = new Set();
-      const copied = new Set();
       for (const dir of fs.readFileSync(0, "utf8").split("\n")) {
         if (dir === "") continue;
-        // A real directory under the harness is a copy this script made; a link
-        // points into the store, where pnpm already laid out its dependencies.
-        try {
-          if (fs.lstatSync(dir).isDirectory()) copied.add(path.basename(dir));
-        } catch {
-          // Unreadable means not a copy we can reason about.
-        }
         let manifest;
         try {
           manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
         } catch {
           continue;
+        }
+        // A real directory under the harness is a copy this script made; a link
+        // points into the store, where pnpm already laid out its dependencies.
+        // Recorded per package, not by directory name: the basename of a scoped
+        // package directory is only its last path segment.
+        let isCopy = false;
+        try {
+          isCopy = fs.lstatSync(dir).isDirectory();
+        } catch {
+          // Unreadable means not a copy we can reason about.
         }
         // An optional dependency is absent by design on a platform that does not
         // offer it -- the platform prebuilds are exactly that.
@@ -345,7 +347,7 @@ harness_missing_copied_dependencies() {
             // exists to stage. A third-party name is only this step concern when
             // the package holding it was copied, because a copy has no siblings and
             // therefore cannot resolve what a store package would.
-            if (!name.startsWith("@deepseek-ai/") && !copied.has(manifest.name)) continue;
+            if (!name.startsWith("@deepseek-ai/") && !isCopy) continue;
             if (!fs.existsSync(path.join(harness, "node_modules", name))) missing.add(name);
           }
         }
