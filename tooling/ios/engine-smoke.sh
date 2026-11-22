@@ -14,8 +14,10 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 ENGINE=${DPSK_ENGINE_DIR:-$ROOT/app/ios/Engine}
-[ -f "$ENGINE/.ready" ] || {
-  echo "engine-smoke: run tooling/ios/prepare-engine.sh first" >&2
+# `.ready` stays in the engine job's workspace and is not part of the cache the
+# ipa/boot jobs restore; the deployed bin.js is what actually has to be there.
+[ -f "$ENGINE/host.mjs" ] && [ -f "$ENGINE/runtime/harness/lib/bin.js" ] || {
+  echo "engine-smoke: no prepared engine at $ENGINE (run tooling/ios/prepare-engine.sh)" >&2
   exit 1
 }
 command -v node >/dev/null || {
