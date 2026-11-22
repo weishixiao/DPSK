@@ -77,11 +77,27 @@ Info.plist 的 `DPSKEngineJIT` 默认 `false`，启动时加 `--jitless`——�
 | `skill-office` | 没人注入 `skillOffice`；Office 技能指向 Python |
 | `terminal-controller`、`ui-sidebar-terminal` | 客户端行是 `terminalController` 唯一的消费者，两行一起关 |
 | `directory-picker` → 换成 `-browse` 两行 | 与仓库自己的 `apps/web/tests/pin-browse-picker.overlay.yml` 逐字相同 |
+| `subprocess` → 换成 `subprocess-ios` 一行 | 见下节；provider 换人，服务名还是 `subprocess` |
 
-**故意不关**的：`sandbox`、`bash-sandbox`、`pwsh-sandbox`、`subprocess`。它们是
-providers，`tool-fs-search`、`workspace-changes`、`terminal-bash`、PTC 运行时都注入
-它们；在 iOS 上它们的失败形态是 `spawn` 报错（`sandbox-local` 的探针本来就是
-`spawnSync` 返回非零即「unusable」），关掉反而会让上面那些行在挂载阶段失败。
+补丁**不能给已有的行改名**：`name` 在补丁里是校验值，写别的包名只会被报
+`patch: name mismatch … skipping` 并跳过。所以换 provider 只能「关掉原行 + `insert`
+一行新的」，新行的 id 只是行的名字，注入方认的是服务名。
+
+### `subprocess` 换成了拒绝型的 iOS provider
+
+`packages/subprocess/subprocess-local/src/ios.ts`
+（`@deepseek-ai/dsh-subprocess-local/ios`）：每一次 `spawn`／`spawnTerminal`／
+`resolveExecutable` 都**故意拒绝**，带一份说清平台限制与替代做法的说明，而不是让
+`fork` 自己抛 `EPERM`／`ENOENT`——在 macOS 上那两种是「程序不存在」的意思，在手机上
+不是。错误码仍是消费者的既有分流口：`SUBPROCESS_SPAWN_FAILED`（起不了进程）、
+`SUBPROCESS_PTY_UNAVAILABLE`（没有终端）。`resolveExecutable` 一并拒绝，所以 LSP 这类
+需要在挂载期找二进制的行会在挂载阶段就报同一句话，而不是先把行挂上去、等到第一次调用
+才炸。文件工具、会话日志、模型请求都不经过 seam，照常工作。
+
+**故意不关**的：`sandbox`、`bash-sandbox`、`pwsh-sandbox`。它们是 providers，
+`tool-fs-search`、`workspace-changes`、PTC 运行时都注入它们；在 iOS 上它们的失败形态是
+探针报错（`sandbox-local` 的探针本来就是 `spawnSync` 返回非零即「unusable」，
+无 runner 时按 `SANDBOX_UNAVAILABLE` 失败关闭），关掉反而会让上面那些行在挂载阶段失败。
 `office-kit` 同理：`standard`／`ptc` 两个 preset 里的 `tool-office` 注入
 `officeKit`。`workspace-dependencies` 与两个遥测行本来就只在 desktop profile 启用，
 这里再关一次只是重复，还会把 desktop 的配置丢掉。

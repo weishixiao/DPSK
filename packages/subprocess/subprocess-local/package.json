@@ -28,6 +28,10 @@
       "types": "./lib/types/output.d.ts",
       "default": "./lib/output.js"
     },
+    "./ios": {
+      "types": "./lib/types/ios.d.ts",
+      "default": "./lib/ios.js"
+    },
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
@@ -36,6 +40,7 @@
     "lib/runner.js",
     "lib/runner-*.js",
     "lib/output.js",
+    "lib/ios.js",
     "scripts/ensure-spawn-helper.mjs",
     "lib/types/**/*.d.ts",
     "lib/types/**/*.d.ts.map",

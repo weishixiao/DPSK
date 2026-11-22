@@ -1,20 +1,24 @@
 # Loader overlay for the in-app engine: what a phone cannot run.
 #
 # `host.mjs` passes this to `dsh web --patch`, so it applies after the `web`
-# bundle's own patch and after the `presets/` files. Two limits shape what it can
-# say:
+# bundle's own patch and after the `presets/` files. Three limits shape what it
+# can say:
 #
 #   1. It reaches HOST-plane rows only. The model-facing tools (`tool-bash`,
 #      `tool-fs`, …) are disabled at the host plane by the web bundle and mounted
 #      again inside each agent preset, so a row named here cannot remove them.
 #      See "open item: preset rows" at the bottom.
-#   2. A patch replaces the targeted row's whole `config`, and disabling a row
-#      whose service another row injects fails that other row at mount. So this
-#      file disables only rows nothing else injects (`openInApp`, `skillOffice`,
-#      `terminalController` have no injectors in this profile), and it leaves the
-#      process/sandbox providers (`subprocess`, `sandbox`, `sandbox-policy`)
-#      alone: `tool-fs-search`, `workspace-changes`, `terminal-bash` and the PTC
-#      runtime all inject them, and they fail per call on iOS rather than at load.
+#   2. A patch replaces the targeted row's whole `config`, and its `name` is a
+#      guard, not a value: naming a different package on an existing id is
+#      reported as a name mismatch and the patch is skipped. Swapping a provider
+#      therefore takes a `disabled` row plus an inserted one (see
+#      "process provider" below).
+#   3. Disabling a row whose service another row injects fails that other row at
+#      mount, so a provider is only disabled when its replacement is inserted in
+#      the same overlay. `openInApp`, `skillOffice` and `terminalController` have
+#      no injectors in this profile and go away with nothing in their place; the
+#      `sandbox` providers are left alone: `sandbox-policy`, `bash-sandbox` and
+#      the tools fail per call on iOS rather than at load.
 
 # ── desktop-only conveniences ────────────────────────────────────────────────
 
@@ -50,6 +54,30 @@
 - id: ui-sidebar-terminal
   disabled: true
 
+# ── process provider ─────────────────────────────────────────────────────────
+#
+# The shipped `subprocess` row is the local provider, which reports a refused
+# fork as the platform's errno: a bundled helper, a system binary and a shell are
+# indistinguishable, and every consumer reads one string as "the program is
+# missing". The app mounts a provider that refuses on purpose instead, naming the
+# platform limit once (`IOS_SUBPROCESS_UNAVAILABLE` in
+# `packages/subprocess/subprocess-local/src/ios.ts`) with a code consumers route
+# on (`SUBPROCESS_SPAWN_FAILED`, `SUBPROCESS_PTY_UNAVAILABLE`). File tools, the
+# session log and the model all keep working; only process work is refused, and
+# it is refused with the reason a model can act on.
+#
+# The row id changes because a patch cannot rename an existing row: the shipped
+# id is disabled and the replacement inserted. Service lookup is by name
+# (`subprocess`), not by row id, so every injector finds the new provider.
+#
+# `sandbox` and `sandbox-policy` stay as shipped: they fail closed per call
+# (`SANDBOX_UNAVAILABLE`) and nothing can start a process for them to confine.
+- id: subprocess
+  disabled: true
+- insert:
+    - id: subprocess-ios
+      name: '@deepseek-ai/dsh-subprocess-local/ios'
+
 # ── directory picker ─────────────────────────────────────────────────────────
 #
 # The shipped `-auto` row resolves to the native OS chooser on a loopback bind,
@@ -67,11 +95,10 @@
 
 # ── deliberately NOT here ────────────────────────────────────────────────────
 #
-# `sandbox`, `bash-sandbox`, `pwsh-sandbox`, `subprocess`: providers other rows
-# inject. Their iOS failure is a `spawnSync`/`spawn` error, which the codebase
-# already treats as "probe unusable" or a per-call error — disabling them would
-# instead break `tool-fs-search`, `workspace-changes`, `terminal-bash` and the
-# PTC runtime at mount.
+# `sandbox`, `bash-sandbox`, `pwsh-sandbox`: providers other rows inject. Their
+# iOS failure is a probe error, which the codebase already treats as "probe
+# unusable" — disabling them would instead break `tool-fs-search`,
+# `workspace-changes` and the PTC runtime at mount.
 #
 # `workspace-dependencies`, `desktop-product-telemetry`, `product-analytics`:
 # already gated to the desktop profile by the web bundle, so a second disable
