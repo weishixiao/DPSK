@@ -206,18 +206,56 @@ harness_imports() {
   } | sed -E "s/.*['\"](@deepseek-ai\/[A-Za-z0-9._-]+)$/\1/" | sort -u
 }
 
-# The modules in that list the deployed tree cannot resolve. `deploy` writes the
-# store to `node_modules/.pnpm/node_modules` and each direct dependency beside it,
-# and a package added by stage_harness_peers lands in `node_modules` itself; all
-# three are on the path Node walks from a package inside the tree.
+# The modules in that list the deployed tree cannot resolve, asked the way Node asks.
+#
+# Checking a fixed pair of directories is not the same question. `deploy` puts a
+# store package's own dependencies in `.pnpm/<pkg>@<hash>/node_modules`, beside the
+# package rather than at the tree root, so a name can be resolvable from the root
+# and still be unreachable from the file that imports it. That is what a device
+# showed: `dsh-bash-sandbox` is a store package, its peer `dsh-bash-local` was never
+# staged, and the old root-level check saw a directory the importing file's real
+# path never walks to -- five plugins failed to import while the check reported
+# nothing.
+#
+# So each import is resolved from the file that has it, after `realpath`: the same
+# algorithm Node runs. A name no import site can reach is a gap; one that some
+# sites reach is still reported, because whatever fails to import is a plugin that
+# will not mount.
 harness_missing_peers() {
-  local harness="$1" name
-  harness_imports "$harness" | while IFS= read -r name; do
-    if [ ! -e "$harness/node_modules/$name" ] \
-      && [ ! -e "$harness/node_modules/.pnpm/node_modules/$name" ]; then
-      printf '%s\n' "$name"
-    fi
-  done
+  local harness="$1"
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
+    --include='*.js' --include='*.mjs' \
+    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    | node -e '
+      const fs = require("fs");
+      const { createRequire } = require("module");
+      // `<file>:<matched text>`: the matched text holds no colon of its own, so
+      // the last one in the line separates them whatever the path contains.
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+)$/;
+      const unresolved = new Set();
+      const realpaths = new Map();
+      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
+        const found = line.match(LINE);
+        if (found === null) continue;
+        const file = found[1];
+        const name = found[2];
+        let path = realpaths.get(file);
+        if (path === undefined) {
+          try {
+            path = fs.realpathSync(file);
+          } catch {
+            path = file;
+          }
+          realpaths.set(file, path);
+        }
+        try {
+          createRequire(path).resolve(name);
+        } catch {
+          unresolved.add(name);
+        }
+      }
+      for (const name of unresolved) console.log(name);
+    '
 }
 
 # The packages in the tree that are real directories instead of links into the
