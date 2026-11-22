@@ -146,6 +146,11 @@ stage_harness() {
   # how the gaps are closed.
   stage_harness_peers "$engine_dir/runtime/harness"
 
+  # Before anything is measured or staged on top: a deploy made on a Mac carries
+  # the macOS and Windows builds of every package that has them, plus each wasm
+  # backend, and none of that can load here. See prune_foreign_platform_packages.
+  prune_foreign_platform_packages "$engine_dir/runtime/harness"
+
   # `host.mjs` imports `lib/bin.js`; without it the app boots and fails at once,
   # so the staging step refuses to leave a half-filled Engine/ behind.
   [ -f "$engine_dir/runtime/harness/lib/bin.js" ] \
@@ -402,6 +407,87 @@ EOF
     # window, so it goes to stderr where a build log keeps it apart from progress.
     printf 'warning: these packages are in the harness but nothing they import resolves to them -- their built output is missing, and the app will fail on the first import: %s\n' \
       "$(printf '%s ' $unresolvable)" >&2
+  fi
+}
+
+# ── the packages that exist only for another platform ────────────────────────
+
+# The Mach-O rule below reads files, so it cannot see the weight that is not a
+# binary: LibreOffice's engine is one 141 MB executable beside 13 MB of data, and
+# a WebAssembly engine carries no Mach-O at all -- `@deepseek-ai/libreoffice-kit-wasm`
+# is 145 MB of `.wasm` and assets. Both are useless on this device: the wasm engine
+# needs a JIT, which the app refuses to ask for (the engine runs `--jitless`, see
+# app/ios/README.md), and the macOS engine cannot be dlopened. The names are what
+# these packages have in common: npm gives a platform package the triple it was
+# built for, `-darwin-arm64`, `-win32-x64`, `-linux-x64`, ... and a wasm backend
+# `-wasm`. So the whole package goes, not just its files.
+#
+# Deleting the package is also the smaller change for the consumer: a package that
+# is absent is reported as "not available" (`@deepseek-ai/libreoffice-kit`'s
+# resolver falls through to the next engine), while a package whose binary was
+# deleted reports "failed to load". Every consumer of these is lazy -- office-kit
+# imports its engine inside `resolve()`, sharp and node-pty inside the first call
+# that needs them, sherpa-onnx inside the voice-input plugin -- so no boot path
+# imports one, and nothing on the device loses a capability it had: the binaries
+# were already unloadable.
+#
+# `node-addon-system-darwin-arm64` is the one name this rule cannot read: it is
+# this script's own flock addon, built for iOS and named for darwin because that
+# is what Node reports for `process.platform` here (see stage_system_addon). It is
+# staged after this runs; the keep-list is here so a later reordering cannot cost
+# the app its session store.
+#
+# A name that only mentions a platform is not one of these: `@deepseek-ai/dsh-win32-process`
+# implements Windows support in JavaScript and ships on every platform, so the
+# architecture after the OS is what tells a platform package from a package about a
+# platform. The OS token alone would delete it, and with it the harness.
+prune_foreign_platform_packages() {
+  local harness="$1" before after path name kept=0 removed=0
+  local os='darwin|win32|linux|android|freebsd|openbsd|netbsd|sunos'
+  local arch='x64|x86_64|arm64|aarch64|ia32|x86|arm|armv7|armv7l|ppc64|ppc64le|s390x|riscv64|universal'
+  local triple="(^|[-_])($os)[-_]($arch)([-_].*)?\$"
+  say "dropping the packages built for another platform"
+  before=$(du -sm "$harness" | cut -f1)
+  while IFS= read -r -d '' path; do
+    # A directory already gone went with its parent, which was one of these.
+    [ -d "$path" ] || continue
+    name=${path##*/}
+    # pnpm decorates a store entry with its version (`name@1.2.3`) and a scoped
+    # one with its scope (`@scope+name@1.2.3`); the package name is what is left,
+    # and `+` is punctuation like `-`, so a triple can follow it directly
+    # (`@esbuild+darwin-arm64`).
+    name=${name%@*}
+    name=${name//+/-}
+    case "$name" in
+      *node-addon-system-darwin-arm64*) kept=$((kept + 1)); continue ;;
+    esac
+    if [[ ! $name =~ $triple && ! $name =~ -wasm$ ]]; then
+      continue
+    fi
+    say "  dropping ${path#"$harness/node_modules/"}"
+    rm -rf "${path:?}"
+    removed=$((removed + 1))
+  done < <(find "$harness/node_modules" -type d \
+             \( -name '*darwin*' -o -name '*win32*' -o -name '*linux*' -o -name '*android*' \
+                -o -name '*bsd*' -o -name '*sunos*' -o -name '*-wasm' \) -print0 2>/dev/null)
+
+  # What is left of a Windows-only package that is not itself a package: node-pty
+  # ships ConPTY's `.pdb` and `.dll` inside its own tarball, where the name rule
+  # above has no package to delete. No iOS process opens any of these extensions.
+  find "$harness/node_modules" -type f \
+    \( -name '*.pdb' -o -name '*.dll' -o -name '*.exe' -o -name '*.lib' -o -name '*.def' \) \
+    -delete 2>/dev/null || true
+
+  # A deleted store entry leaves the top-level link that pointed at it dangling,
+  # and a dangling link is worse than an absent package: Node reports it as an
+  # installed package that is broken.
+  find "$harness/node_modules" -xtype l -delete 2>/dev/null || true
+  find "$harness/node_modules" -depth -type d -empty -delete 2>/dev/null || true
+
+  after=$(du -sm "$harness" | cut -f1)
+  say "dropped $removed packages built for another platform; the harness is $before MB -> $after MB"
+  if [ "$kept" -gt 0 ]; then
+    say "kept $kept path(s) named for darwin that are built for iOS"
   fi
 }
 

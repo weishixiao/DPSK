@@ -165,6 +165,22 @@ Node 版本或暂存布局要变时才改它。patches 不进缓存键——那�
    Node 启动、脚本执行都通了），死在 harness 的 import 上，也就是第 3 条。第 1 条
    （flock addon）、第 2 条（preset patch 是否被 Loader 接受）、`--jitless` 下 harness
    的实际速度，仍然只有重装之后才知道。
+6. **包体积：`deploy` 会把 macOS 版一起带进来，现在按包名裁掉。**
+   在 Mac 上 `pnpm deploy` 只解析当前平台的 optionalDependencies，于是树上多了
+   LibreOffice 引擎（`@deepseek-ai/libreoffice-kit-darwin-arm64` 154 MB，其中
+   `bin/dsoffice` 单个 141 MB）、它的 wasm 后端
+   （`@deepseek-ai/libreoffice-kit-wasm` 145 MB，全无 Mach-O）、sherpa-onnx、
+   sharp/libvips、koffi、ripgrep、esbuild 的 darwin 包，以及 node-pty 自带的
+   Windows 预编译（`.dll`/`.pdb`/`.exe`）。这些在 iOS 上要么 dlopen 必失败，要么
+   需要 JIT（`--jitless` 下 wasm 不可用），所以 `stage_harness` 里的
+   `prune_foreign_platform_packages` 整个包删掉，顺带删掉指向它们的悬空链接。
+   判据是 npm 给平台包的名字：OS 后面必须跟架构（`-darwin-arm64`、`-win32-x64`、
+   `-linux-x64-gnu`），只有 OS 的 `@deepseek-ai/dsh-win32-process` 这类 JS 包必须留下。
+   删包而不是只删文件，是为了让消费者拿到"这个平台没有这个包"（例如
+   `@vscode/ripgrep` 的 `require.resolve` 本来就会抛同一句话），而不是"包在、二进制坏了"。
+   这一步之后的 `prune_non_ios_binaries` 仍然负责其余的 Mach-O 与 prebuilds。
+   没验的部分：真机 IPA 的实际大小、删完之后 harness 是否照常启动——都要等下一次
+   Mac/CI 构建。
 
 ## 排查
 
