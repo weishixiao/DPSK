@@ -130,6 +130,66 @@ class Runtime:
             self.zip.close()
 
 
+def declared_dependencies(manifest):
+    """Names a package needs at run time, from both dependency kinds.
+
+    `optionalDependencies` stay out: on a staged tree those are the platform
+    prebuilds that are absent by design.
+    """
+    for key in ("dependencies", "peerDependencies"):
+        for name in (manifest.get(key) or {}):
+            yield name
+
+
+def missing_closure(runtime):
+    """First-party packages reachable from required rows whose deps do not resolve.
+
+    Bounded on purpose: the closures are walked from the packages the overlays and
+    the required rows name, not from every package in the store, so the report
+    stays about what a boot actually touches.
+    """
+    seen_packages, seen_names, unresolved = set(), set(), []
+
+    def visit(pkg):
+        if pkg in seen_packages:
+            return
+        seen_packages.add(pkg)
+        directory, manifest = runtime.package(pkg)
+        if manifest is None:
+            return
+        for dependency in declared_dependencies(manifest):
+            if dependency in seen_names:
+                continue
+            if not dependency.startswith("@deepseek-ai/"):
+                continue
+            seen_names.add(dependency)
+            dep_dir, dep_manifest = runtime.package(dependency)
+            if dep_manifest is None:
+                unresolved.append(f"{pkg} imports {dependency}, which is not in the runtime")
+                continue
+            # Only first-party packages that ship JS are walked further.
+            if dep_dir is not None:
+                visit(dependency)
+
+    roots = set()
+    for overlay in OVERLAYS:
+        path = os.path.join(runtime.root, overlay) if runtime.zip is None else None
+        if path is None or not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as handle:
+            for spec in names_in(handle.read()):
+                if ":" in spec:
+                    continue
+                name, _ = split_spec(spec)
+                if name.startswith("@deepseek-ai/"):
+                    roots.add(name)
+    # Start from the CLI itself: every required row is mounted from it.
+    roots.add("@deepseek-ai/dsh")
+    for root in sorted(roots):
+        visit(root)
+    return unresolved
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", required=True)
@@ -188,6 +248,20 @@ def main():
                 problems.append(f"native addon {pkg} is not in the runtime")
             elif not runtime.has(f"{directory}/{rel}"):
                 problems.append(f"native addon {pkg} has no {rel}")
+
+    # A row can name a package that is present while the packages *it* imports
+    # are not. That is the failure a device actually showed: the overlay resolved,
+    # the listener bound, and 250 ms later the run unwound because a plugin in a
+    # required row's closure could not import `@deepseek-ai/dsh-session`. The
+    # overlay check above cannot see it -- the row names `dsh-web-app`, not the
+    # peer three hops down.
+    #
+    # So walk the real dependency closure of every first-party package the runtime
+    # carries, and require each `@deepseek-ai/*` name it declares to resolve. Peers
+    # count: a staged copy of a package has no `node_modules` of its own, so a peer
+    # it imports is only reachable if the tree root has it.
+    if runtime.zip is None:
+        problems.extend(missing_closure(runtime))
 
     runtime.close()
     if problems:
