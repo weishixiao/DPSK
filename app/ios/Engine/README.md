@@ -152,6 +152,18 @@ Node 版本或暂存布局要变时才改它。patches 不进缓存键——那�
    fail loud。这条检查已在那份真机部署树上跑过，列出的正是上面 11 个；补拷逻辑在
    合成小树上验过两轮补全。整条链路（Mac 重跑 `prepare-engine.sh` → 重装 App →
    引擎真的起来）还没有复跑，需要一台有 Xcode 的机器。
+
+   CI #39 又抓到同类缺口里更隐蔽的一个：`dsh-app-boot` 在模块顶层就 import
+   `@deepseek-ai/cordis-plugin-group`，却只把它写成 `peerDependencies`（另外在
+   `devDependencies` 里有一份给本仓开发用），而 `apps/cli` 提供了 cordis、include、
+   loader、timer，独独漏了 group，于是 `pnpm deploy --prod` 不带它，部署树自检
+   fail loud。根治在消费者一侧：`apps/cli` 的 `dependencies` 补上这一条，
+   `pnpm-lock.yaml` 的 importer 同步（`workspace:~` 记成 `link:../../vendor/group`）。
+   这类缺口以后仍会被自检拦下，但拦下只是 fail loud，不会自愈——`stage_harness_package`
+   只认 checkout 顶层 `node_modules`，而 workspace 的包常常不在那里。
+   另外注意：`ios` 工作流只在 `app/ios/**`、`tooling/ios/**` 改动时触发，只改 CLI
+   依赖不会重跑构建，要动这两棵树里的文件。
+
 4. **JIT 在这台设备上拿不到，`--jitless` 是唯一选项。** 用四种签名分别跑探针
    （裸 `ldid`；`com.apple.security.cs.allow-jit`；`platform-application` +
    `no-sandbox` + `get-task-allow`；TrollStore 式的
