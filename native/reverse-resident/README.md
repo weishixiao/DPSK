@@ -23,7 +23,9 @@ THEOS=/opt/theos make package            # rootless / rootful
 THEOS=/opt/theos THEOS_PACKAGE_SCHEME=roothide make package
 ```
 
-Install the resulting `.deb` with your package manager, then respring: the listener starts from the tweak's constructor, and the first start creates `/var/mobile/Library/DSHReverse` with mode `0700`.
+Install the resulting `.deb` with your package manager, then respring: the listener starts from the tweak's constructor, and the first start creates the state directory `/var/mobile/Library/DSHReverse` with mode `0755` and the socket with `0666` -- the harness connects as `mobile`, so a directory it cannot enter makes the socket's own mode irrelevant.
+
+On RootHide that path is translated through `jbroot()` into the bootstrap root, because the app's virtual root and this process do not see the same directory; the harness side then uses the resolved path (the RootHide section of the deployment page).
 
 Confirm it is up by its own log line, `rv: resident listening on …`, and by `reverse_status` from the harness. [The deployment page](../../docs/reverse/readme.md) covers socket permissions, the capability switch and model routing.
 
