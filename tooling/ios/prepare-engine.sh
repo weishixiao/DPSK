@@ -234,15 +234,30 @@ harness_copied_packages() {
   done
 }
 
-# The dependency names a manifest declares. `dependencies` only: a peer is the
-# consumer's to provide, and an optional dependency is absent by design on a
-# platform that does not offer it -- the platform-specific prebuilds are exactly
-# that.
+# The dependency names a manifest declares, for a package copied into the tree.
+# Both `dependencies` and `peerDependencies`: an optional dependency stays out,
+# because it is absent by design on a platform that does not offer it -- the
+# platform-specific prebuilds are exactly that.
+#
+# A peer belongs to this list here, unlike in the deploy's own closure. A store
+# package finds its peers as sibling links pnpm laid out beside it; a copy made by
+# stage_harness_package carries no `node_modules` at all (`tar --exclude`), so a
+# peer it imports resolves from the tree root or not at all. Reading only
+# `dependencies` is what shipped a harness that booted with no window:
+# `dsh-session-persistence` is copied, and `@deepseek-ai/dsh-session` is its PEER,
+# so nothing staged the module it imports. The top-level link to `dsh-session`
+# happened to exist, which kept harness_missing_peers from noticing, while the
+# copy's own resolution -- the one Node performs -- failed with
+# ERR_MODULE_NOT_FOUND.
 manifest_dependencies() {
   node -e '
     const { readFileSync } = require("fs");
     const manifest = JSON.parse(readFileSync(process.argv[1], "utf8"));
-    for (const name of Object.keys(manifest.dependencies || {})) console.log(name);
+    const names = new Set([
+      ...Object.keys(manifest.dependencies || {}),
+      ...Object.keys(manifest.peerDependencies || {}),
+    ]);
+    for (const name of names) console.log(name);
   ' "$1"
 }
 
