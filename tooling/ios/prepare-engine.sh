@@ -307,43 +307,35 @@ harness_first_party_packages() {
   done
 }
 
-# The dependency names a manifest declares, for a package copied into the tree.
-# Both `dependencies` and `peerDependencies`: an optional dependency stays out,
-# because it is absent by design on a platform that does not offer it -- the
-# platform-specific prebuilds are exactly that.
-#
-# A peer belongs to this list here, unlike in the deploy's own closure. A store
-# package finds its peers as sibling links pnpm laid out beside it; a copy made by
-# stage_harness_package carries no `node_modules` at all (`tar --exclude`), so a
-# peer it imports resolves from the tree root or not at all. Reading only
-# `dependencies` is what shipped a harness that booted with no window:
-# `dsh-session-persistence` is copied, and `@deepseek-ai/dsh-session` is its PEER,
-# so nothing staged the module it imports. The top-level link to `dsh-session`
-# happened to exist, which kept harness_missing_peers from noticing, while the
-# copy's own resolution -- the one Node performs -- failed with
-# ERR_MODULE_NOT_FOUND.
-manifest_dependencies() {
-  node -e '
-    const { readFileSync } = require("fs");
-    const manifest = JSON.parse(readFileSync(process.argv[1], "utf8"));
-    const names = new Set([
-      ...Object.keys(manifest.dependencies || {}),
-      ...Object.keys(manifest.peerDependencies || {}),
-    ]);
-    for (const name of names) console.log(name);
-  ' "$1"
-}
-
 # The dependencies of the copied packages that the tree cannot resolve from them.
 harness_missing_copied_dependencies() {
-  local harness="$1" dir manifest dep
-  while IFS= read -r dir; do
-    manifest="$dir/package.json"
-    while IFS= read -r dep; do
-      [ -n "$dep" ] || continue
-      [ -e "$harness/node_modules/$dep" ] || printf '%s\n' "$dep"
-    done < <(manifest_dependencies "$manifest")
-  done < <(harness_first_party_packages "$harness")
+  local harness="$1"
+  # One process for the whole tree: the packages now include every store entry,
+  # and starting Node per manifest would spend minutes on process spawns alone.
+  harness_first_party_packages "$harness" \
+    | node -e '
+      const fs = require("fs");
+      const path = require("path");
+      const harness = process.argv[1];
+      const missing = new Set();
+      for (const dir of fs.readFileSync(0, "utf8").split("\n")) {
+        if (dir === "") continue;
+        let manifest;
+        try {
+          manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+        } catch {
+          continue;
+        }
+        // An optional dependency is absent by design on a platform that does not
+        // offer it -- the platform prebuilds are exactly that.
+        for (const key of ["dependencies", "peerDependencies"]) {
+          for (const name of Object.keys(manifest[key] ?? {})) {
+            if (!fs.existsSync(path.join(harness, "node_modules", name))) missing.add(name);
+          }
+        }
+      }
+      for (const name of missing) console.log(name);
+    ' "$harness"
 }
 
 # Where this checkout keeps a package. Two answers, in this order.
