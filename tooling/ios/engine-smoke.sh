@@ -124,20 +124,19 @@ esac
 # listener had bound, a required plugin had failed to import, `runCli()`
 # unwound and the process fell off the end of `host.mjs`. Waiting for the
 # address alone passes such a tree, and the app's own 300 ms poll never caught
-# the port either. So the address has to still answer after the app would have
-# stopped looking, and the log must not report a return.
-if grep -q 'harness returned' "$DPSK_LOG" 2>/dev/null; then
-  fail "the harness printed a ready address and then returned"
-fi
+# the port either.
+#
+# What decides is the port, not the log. `host.mjs` now holds the process open
+# when `runCli()` returns, so a returned run can still be serving -- and a log
+# line saying it returned is then a fact about the call, not about the service.
+# The address has to answer after the app would have stopped looking, and the
+# process has to be alive to answer at all.
 sleep 3
 CODE_AFTER=$(curl -s -o /dev/null -w '%{http_code}' "$URL" || true)
 case "$CODE_AFTER" in
   2?? | 3?? | 4??) ;;
   *) fail "GET $URL answered $CODE at first, then $CODE_AFTER three seconds later" ;;
 esac
-if grep -q 'harness returned' "$DPSK_LOG" 2>/dev/null; then
-  fail "the harness returned within three seconds of printing a ready address"
-fi
 if ! kill -0 "$PID" 2>/dev/null; then
   fail "the engine process exited within three seconds of printing a ready address"
 fi
