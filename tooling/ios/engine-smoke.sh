@@ -66,6 +66,21 @@ if [ "$(uname -s)" = Darwin ] && [ -f "$ROOT/native/system/packages/entry/src/fl
   fi
 fi
 
+# This addon is not lazy: `dsh-app-boot` loads it before the server starts, and
+# the engine's copy is built for iOS. Rebuild the same pinned sources for this
+# host, or the smoke can only report "No usable native binding" every time.
+RB_PKG=$(find -L "$ENGINE/runtime/harness/node_modules" -maxdepth 5 -type d \
+  -name 'node-addon-require-builtin-darwin-arm64' -print 2>/dev/null | head -n 1)
+RB="$RB_PKG/prebuilt/darwin-arm64-napi-v9.node"
+if [ -n "$RB_PKG" ] && [ -f "$RB" ]; then
+  if [ "$(node -p 'process.arch' 2>/dev/null || echo arm64)" = arm64 ]; then
+    "$ROOT/tooling/ios/build-require-builtin.sh" macosx "$RB" "$ENGINE/include/node" ||
+      echo "engine-smoke: could not build the host require-builtin binding (the boot will say so)" >&2
+  else
+    echo "engine-smoke: host is not arm64; the engine only carries the darwin-arm64 package" >&2
+  fi
+fi
+
 node "$ENGINE/host.mjs" >"$WORK/stdout.log" 2>&1 &
 PID=$!
 
