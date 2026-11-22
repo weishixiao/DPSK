@@ -150,6 +150,26 @@ stage_harness() {
   # `deploy` carries the deployed package's `dependencies` and leaves peer
   # dependencies to the consumer. See stage_harness_peers for what that costs and
   # how the gaps are closed.
+  # `native/system` is a separate tsconfig root the host build does not reach.
+  #
+  # `@deepseek-ai/node-addon-system` exports `./landlock-run` -> `./lib/index.js`,
+  # and `sandbox-local` imports that subpath statically. The host aggregate
+  # (`tsc -b` over `tsconfig.host.json`) does reference the entry project, but
+  # `build:lib:host` drives `host-libraries`, whose compiler step only walks the
+  # aggregate's references from `packages/`; the deployment therefore carried the
+  # package with no `lib/`, and every import through the subpath failed at run
+  # time while the tree looked complete.
+  #
+  # Building it here is the narrow fix: it is one project, it is already declared
+  # composite with `outDir: lib`, and it is needed by a package the web profile
+  # mounts on iOS.
+  # This function runs from the repository root (the lockfile check above proves
+  # it), and `pnpm` is already required here.
+  if [ -d native/system ]; then
+    ( cd native/system && pnpm run build:ts ) \
+      || fail "native/system's TypeScript did not build — sandbox-local imports its landlock-run subpath"
+  fi
+
   stage_harness_peers "$engine_dir/runtime/harness"
 
   # Before anything is measured or staged on top: a deploy made on a Mac carries
@@ -385,6 +405,43 @@ workspace_package_dir() {
 # holds is linked to it: the bytes are there, and the store entry resolves its own
 # dependencies. Anything else is copied out of this checkout, which is the only
 # case that leaves a package without sibling links.
+# Whether `$name` resolves from the files that import it, which is the question
+# Node asks at run time.
+#
+# Resolving it from the tree root answers a different question and can pass while
+# every import still fails: a store package finds its peers in
+# `.pnpm/<pkg>@<hash>/node_modules`, which shadows the root, so a broken entry
+# there wins over a good copy at the root.
+harness_package_loads() {
+  local harness="$1" name="$2"
+  grep -RlE "(from|import|require)[ ]*\(?[ ]*['\"]$name(/|['\"])" \
+    --include='*.js' --include='*.mjs' \
+    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    | head -n 40 \
+    | node -e '
+      const fs = require("fs");
+      const { createRequire } = require("module");
+      const name = process.argv[1];
+      const files = fs.readFileSync(0, "utf8").split("\n").filter(Boolean);
+      if (files.length === 0) process.exit(1);
+      for (const file of files) {
+        let path = file;
+        try {
+          path = fs.realpathSync(file);
+        } catch {
+          // A file we cannot follow cannot answer either.
+        }
+        try {
+          createRequire(path).resolve(name);
+          process.exit(0);
+        } catch {
+          // Try the next import site.
+        }
+      }
+      process.exit(1);
+    ' "$name"
+}
+
 stage_harness_package() {
   local harness="$1" name="$2"
   # Its own statement: `local x=1 y=$x` expands `$x` before `local` runs, which
@@ -407,16 +464,38 @@ stage_harness_package() {
     say "the deploy left $name out; linking it from the store"
     rm -f "${target:?}"
     ln -s "$link" "$target"
-    if [ -e "$target" ]; then
+    # A link that exists is not a package that loads. The store entry can be
+    # present and still lack what the package resolves at run time -- its own
+    # `lib/`, or a dependency of its own -- and a link to it answers `-e` while
+    # every import through it fails. Ask Node instead of the filesystem.
+    if [ -e "$target" ] && harness_package_loads "$harness" "$name"; then
       return 0
     fi
-    # A link that does not resolve is worse than no link at all: Node reports the
-    # module as absent either way, but only the copy shows what was staged.
+    # The link is gone either way; what replaces it has to be a copy that actually
+    # resolves. The store's own directory is tried first because it is what the
+    # deploy already read, but it is exactly the copy under suspicion here, so a
+    # workspace copy follows when it is no better.
     say "the store's $name does not resolve from node_modules; copying it instead"
     rm -f "${target:?}"
-    source=$(cd "$harness/node_modules/.pnpm/node_modules/$name" && pwd -P) \
-      || fail "the store's $name is unreachable"
-    cp -RL "$source" "$target"
+    source=$(cd "$harness/node_modules/.pnpm/node_modules/$name" && pwd -P) || source=""
+    if [ -n "$source" ]; then
+      cp -RL "$source" "$target"
+      if harness_package_loads "$harness" "$name"; then
+        return 0
+      fi
+      say "the store's $name still does not load; taking it from the workspace"
+    fi
+    rm -rf "${target:?}"
+    source=$(workspace_package_dir "$name") \
+      || fail "the deployed harness needs $name, and this checkout has no workspace package by that name"
+    mkdir -p "$target"
+    tar -C "$source" -chf - --exclude='*node_modules*' . \
+      | tar -C "$target" -xf - \
+      || fail "could not copy $name out of this checkout"
+    # The last attempt, so it is checked: a copy that does not load would send
+    # stage_harness_peers round again with the same name and no new answer.
+    harness_package_loads "$harness" "$name" \
+      || fail "$name was copied from the workspace and still does not resolve from the files that import it"
     return 0
   fi
   source=$(workspace_package_dir "$name") \
@@ -435,6 +514,8 @@ stage_harness_package() {
   tar -C "$source" -chf - --exclude='*node_modules*' . \
     | tar -C "$target" -xf - \
     || fail "could not copy $name out of this checkout"
+  harness_package_loads "$harness" "$name" \
+    || fail "$name was copied from the workspace and still does not resolve from the files that import it"
 }
 
 # The imports that resolve to nothing even though the directory check above
