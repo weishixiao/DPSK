@@ -258,19 +258,73 @@ harness_missing_copied_dependencies() {
   done < <(harness_copied_packages "$harness")
 }
 
-# Where this checkout has a package installed. Asked of Node because the workspace
-# keeps most packages in the store rather than at the root, so a dependency of a
-# dependency is usually not at `node_modules/<name>`.
+# Where this checkout keeps a package. Two answers, in this order.
+#
+# The installed tree first, because it is what `deploy` itself read: a package the
+# root does link is one `existsSync` away. It is not enough on its own, though --
+# a peer dependency is by definition the name no manifest in the deploy's closure
+# declares as its own, so the store has no entry for it, and a workspace package
+# that only *other* packages peer on has no link in the root `node_modules`
+# either. Asking only the install turned every such gap into a hard failure
+# (`CI #40: @deepseek-ai/dsh-attachment`), which is the one outcome this step
+# exists to avoid.
+#
+# So the checkout is asked second, by name, over the directories
+# `pnpm-workspace.yaml` globs (`packages/*/*`, `apps/*`, `vendor/*`,
+# `native/system/packages/*`): the sources are all here, and `build:lib:host` has
+# just built each package's `lib/` in place, which is what the copy below needs.
 workspace_package_dir() {
   node -e '
     const { createRequire } = require("module");
-    const { existsSync } = require("fs");
-    const request = createRequire(process.argv[1] + "/package.json");
-    for (const base of request.resolve.paths(process.argv[2]) || []) {
-      const dir = base + "/" + process.argv[2];
+    const { existsSync, readdirSync, readFileSync } = require("fs");
+    const { join } = require("path");
+    const [root, name] = process.argv.slice(1);
+
+    const request = createRequire(root + "/package.json");
+    for (const base of request.resolve.paths(name) || []) {
+      const dir = base + "/" + name;
       if (existsSync(dir + "/package.json")) { console.log(dir); process.exit(0); }
     }
-    process.exit(1);
+
+    // The workspace globs are `packages/*/*`, `apps/*`, `vendor/*`,
+    // `native/system/packages/*` and `website`, so three levels below those
+    // directories reach every member. Nothing deeper is entered: the trees below
+    // them (`skills/*/templates`, test fixtures) hold manifests that are not
+    // workspace members, and walking them costs more than the answer is worth.
+    const skip = new Set(["node_modules", "lib", "dist", "coverage"]);
+    const manifestName = (dir) => {
+      const manifest = join(dir, "package.json");
+      if (!existsSync(manifest)) return undefined;
+      try {
+        return JSON.parse(readFileSync(manifest, "utf8")).name;
+      } catch {
+        return undefined;
+      }
+    };
+    const walk = (dir, depth) => {
+      if (manifestName(dir) === name) return dir;
+      if (depth === 0) return undefined;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return undefined;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name.startsWith(".") || skip.has(entry.name)) continue;
+        const found = walk(join(dir, entry.name), depth - 1);
+        if (found !== undefined) return found;
+      }
+      return undefined;
+    };
+    let found;
+    for (const top of ["packages", "apps", "vendor", "native", "website"]) {
+      found = walk(join(root, top), 3);
+      if (found !== undefined) break;
+    }
+    if (found === undefined) process.exit(1);
+    console.log(found);
   ' "$root" "$1"
 }
 
@@ -313,7 +367,7 @@ stage_harness_package() {
     return 0
   fi
   source=$(workspace_package_dir "$name") \
-    || fail "the deployed harness needs $name, and this checkout does not install it"
+    || fail "the deployed harness needs $name, and this checkout has no workspace package by that name"
   say "the deploy left $name out; taking it from the workspace"
   rm -rf "${target:?}"
   mkdir -p "$target"

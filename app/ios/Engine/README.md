@@ -159,10 +159,19 @@ Node 版本或暂存布局要变时才改它。patches 不进缓存键——那�
    loader、timer，独独漏了 group，于是 `pnpm deploy --prod` 不带它，部署树自检
    fail loud。根治在消费者一侧：`apps/cli` 的 `dependencies` 补上这一条，
    `pnpm-lock.yaml` 的 importer 同步（`workspace:~` 记成 `link:../../vendor/group`）。
-   这类缺口以后仍会被自检拦下，但拦下只是 fail loud，不会自愈——`stage_harness_package`
-   只认 checkout 顶层 `node_modules`，而 workspace 的包常常不在那里。
+   补完这一条，CI #40 立刻换成 `dsh-attachment`——说明缺口不止一个，而补拷逻辑
+   本身没生效：`stage_harness_package` 找包时只问 `createRequire(root)` 的
+   `resolve.paths()`，也就是 checkout 顶层 `node_modules`，而 peer 依赖恰恰是
+   没有哪个包把它写进 `dependencies` 的名字，store 里没有、顶层也就没有链接，
+   于是每一个 peer 都撞成 "this checkout does not install it"。
+   现在 `workspace_package_dir` 先问安装树、再按名字遍历 workspace 的顶层目录
+   （`packages/*/*`、`apps/*`、`vendor/*`、`native/system/packages/*`）：
+   源码都在 checkout 里，`build:lib:host` 刚把每个包的 `lib/` 就地建好，拷过去
+   就是完整的包。补拷因此真的会自愈，整条 peer 闭包在一轮里补齐；checkout 里
+   根本没有的包名仍然 fail loud。
    另外注意：`ios` 工作流只在 `app/ios/**`、`tooling/ios/**` 改动时触发，只改 CLI
-   依赖不会重跑构建，要动这两棵树里的文件。
+   依赖不会重跑构建，要动这两棵树里的文件。IPA 只由 `ipa` job 产出，它
+   `needs: engine`，所以引擎这步不过就没有任何 IPA，也看不到 `ipa` job 的日志。
 
 4. **JIT 在这台设备上拿不到，`--jitless` 是唯一选项。** 用四种签名分别跑探针
    （裸 `ldid`；`com.apple.security.cs.allow-jit`；`platform-application` +
