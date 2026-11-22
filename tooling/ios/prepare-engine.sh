@@ -223,7 +223,7 @@ harness_imports() {
     grep -RhoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
       --include='*.js' --include='*.mjs' \
       "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null || true
-  } | sed -E "s/.*['\"](@deepseek-ai\/[A-Za-z0-9._-]+)$/\1/" | sort -u
+  } | sed -E "s/.*['\"](@deepseek-ai\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*)$/\1/" | sort -u
 }
 
 # The modules in that list the deployed tree cannot resolve, asked the way Node asks.
@@ -243,7 +243,7 @@ harness_imports() {
 # will not mount.
 harness_missing_peers() {
   local harness="$1"
-  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
     --include='*.js' --include='*.mjs' \
     "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
     | node -e '
@@ -251,7 +251,7 @@ harness_missing_peers() {
       const { createRequire } = require("module");
       // `<file>:<matched text>`: the matched text holds no colon of its own, so
       // the last one in the line separates them whatever the path contains.
-      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+)$/;
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/;
       const unresolved = new Set();
       const realpaths = new Map();
       for (const line of fs.readFileSync(0, "utf8").split("\n")) {
@@ -414,7 +414,12 @@ workspace_package_dir() {
 # there wins over a good copy at the root.
 harness_package_loads() {
   local harness="$1" name="$2"
-  grep -RlE "(from|import|require)[ ]*\(?[ ]*['\"]$name(/|['\"])" \
+  # Resolve the specifiers the importing files actually use, not the bare package
+  # name. A package that publishes only `exports` subpaths (`@scope/pkg` with no
+  # `main`) cannot be resolved by its own name at all, so asking that way reports
+  # a present package as missing -- which is exactly what it did for
+  # `@deepseek-ai/node-addon-system`, whose only entry points are subpaths.
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]$name(/[A-Za-z0-9._-]+)*" \
     --include='*.js' --include='*.mjs' \
     "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
     | head -n 40 \
@@ -422,9 +427,22 @@ harness_package_loads() {
       const fs = require("fs");
       const { createRequire } = require("module");
       const name = process.argv[1];
-      const files = fs.readFileSync(0, "utf8").split("\n").filter(Boolean);
-      if (files.length === 0) process.exit(1);
-      for (const file of files) {
+      const SPEC = /[\x27"](@[^\x27"]+)[\x27"]/;
+      const seen = new Set();
+      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
+        if (line === "") continue;
+        // <file>:<matched text>. The matched text holds no colon of its own, so
+        // the last one separates them whatever the path contains.
+        const cut = line.lastIndexOf(":");
+        if (cut < 0) continue;
+        const file = line.slice(0, cut);
+        const quoted = line.slice(cut + 1).match(SPEC);
+        if (quoted === null) continue;
+        const specifier = quoted[1];
+        // Only the package and its subpaths belong to this package's question.
+        if (specifier !== name && !specifier.startsWith(name + "/")) continue;
+        if (seen.has(specifier)) continue;
+        seen.add(specifier);
         let path = file;
         try {
           path = fs.realpathSync(file);
@@ -432,7 +450,7 @@ harness_package_loads() {
           // A file we cannot follow cannot answer either.
         }
         try {
-          createRequire(path).resolve(name);
+          createRequire(path).resolve(specifier);
           process.exit(0);
         } catch {
           // Try the next import site.
@@ -536,7 +554,7 @@ stage_harness_package() {
 harness_unresolvable_imports() {
   local harness="$1"
   [ -f "$harness/lib/bin.js" ] || return 0
-  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
     --include='*.js' --include='*.mjs' \
     "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
     | node -e '
@@ -544,7 +562,7 @@ harness_unresolvable_imports() {
       const { createRequire } = require("module");
       // `<file>:<matched text>`: the matched text carries no colon, so the last
       // one in the line is the separator, whatever the path holds.
-      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+)$/;
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/;
       const failing = new Map();
       const resolving = new Set();
       const realpaths = new Map();
@@ -588,7 +606,15 @@ stage_harness_peers() {
     # on with a tree that is known to be incomplete.
     while IFS= read -r name; do
       [ -n "$name" ] || continue
-      stage_harness_package "$harness" "$name"
+      # A gap is an import site's specifier, which may name a subpath
+      # (`@scope/pkg/sub`). Staging works on packages, so the subpath is dropped
+      # here; the package is what has to be present, and the subpath belongs to its
+      # own `exports`.
+      case "$name" in
+        # Scoped with a subpath: keep the scope and the package name.
+        @*/*/*) stage_harness_package "$harness" "${name%/*}" ;;
+        *) stage_harness_package "$harness" "$name" ;;
+      esac
     done <<EOF
 $gaps
 EOF
