@@ -12,15 +12,13 @@ struct RootView: View {
     var body: some View {
         ZStack {
             palette.background.ignoresSafeArea()
-            switch model.phase {
-            case .idle:
-                waiting("正在连接…")
-            case .connecting:
-                waiting("正在启动本机引擎…")
-            case .ready(let url):
+            // The window is always the app. A page, when there is one, covers the
+            // home screen; a connection that has not happened is a property of the
+            // home screen, not a different screen. Nothing here can refuse to open.
+            if case .ready(let url) = model.phase {
                 served(url)
-            case .failed(let message):
-                failure(message)
+            } else {
+                home
             }
         }
         .preferredColorScheme(model.settings.theme.colorScheme)
@@ -29,7 +27,127 @@ struct RootView: View {
             SettingsSheet(model: model)
                 .presentationDetents([.medium, .large])
         }
-        .onAppear { model.start() }
+        // A notice, not a gate: it can be dismissed, and the app stays usable.
+        .alert("连不上", isPresented: noticeBinding, presenting: model.connectionNotice) { _ in
+            Button("重试") { model.retry() }
+            Button("设置") { editing = true }
+            Button("好", role: .cancel) {}
+        } message: { message in
+            Text(message)
+        }
+        .onAppear {
+            // The window is on screen first; the connection is offered after.
+            model.started()
+            model.connectInBackground()
+        }
+    }
+
+    /// The alert shows while there is something to say and the page is not up.
+    private var noticeBinding: Binding<Bool> {
+        Binding(
+            get: {
+                guard model.connectionNotice != nil else { return false }
+                if case .ready = model.phase { return false }
+                return true
+            },
+            set: { shown in
+                if !shown { model.connectionNotice = nil }
+            }
+        )
+    }
+
+    /// The app's own screen: what this build is, and one way to open the page.
+    @ViewBuilder
+    private var home: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("DPSK")
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(palette.primary)
+                Text(model.settings.mode == .engine ? "本机引擎" : "远程主机")
+                    .font(mono)
+                    .foregroundStyle(palette.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                label("地址")
+                Text(destination)
+                    .font(mono)
+                    .foregroundStyle(palette.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            if case .connecting = model.phase {
+                HStack(spacing: 10) {
+                    ProgressView().tint(palette.primary)
+                    Text(model.settings.mode == .engine ? "正在启动本机引擎…" : "正在连接…")
+                        .font(mono)
+                        .foregroundStyle(palette.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            VStack(spacing: 12) {
+                Button {
+                    model.connect()
+                } label: {
+                    Text(connectTitle)
+                        .font(mono)
+                        .foregroundStyle(palette.background)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(palette.accent)
+                }
+                .disabled(isConnecting)
+
+                Button {
+                    editing = true
+                } label: {
+                    Text("设置")
+                        .font(mono)
+                        .foregroundStyle(palette.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 2)
+                                .stroke(palette.primary.opacity(0.4), lineWidth: 0.5)
+                        )
+                }
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// What the saved settings point at, in one line.
+    private var destination: String {
+        switch model.settings.mode {
+        case .remote:
+            let typed = model.settings.remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            return typed.isEmpty ? "还没有填主机地址" : typed
+        case .engine:
+            return model.engineAvailable ? "包内 Node 运行时" : "这个包里没有本机引擎"
+        }
+    }
+
+    private var isConnecting: Bool {
+        if case .connecting = model.phase { return true }
+        return false
+    }
+
+    private var connectTitle: String {
+        switch model.settings.mode {
+        case .remote: return "连接"
+        case .engine: return model.engineAvailable ? "启动本机引擎" : "改用远程主机"
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(palette.primary.opacity(0.45))
     }
 
     /// The colours of the current appearance. Read from the environment so
@@ -68,47 +186,6 @@ struct RootView: View {
         }
     }
 
-    private func waiting(_ text: String) -> some View {
-        VStack(spacing: 16) {
-            ProgressView().tint(palette.primary)
-            Text(text)
-                .font(mono)
-                .foregroundStyle(palette.secondary)
-        }
-    }
-
-    private func failure(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("连不上")
-                .font(.system(size: 22, weight: .light))
-                .foregroundStyle(palette.primary)
-            Text(message)
-                .font(mono)
-                .foregroundStyle(palette.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 12) {
-                outlineButton("重试") { model.retry() }
-                outlineButton("设置") { editing = true }
-            }
-            .padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(28)
-    }
-
-    private func outlineButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(mono)
-                .foregroundStyle(palette.primary)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 2)
-                        .stroke(palette.primary.opacity(0.4), lineWidth: 0.5)
-                )
-        }
-    }
 }
 
 /// The shell's two appearances, named once.
