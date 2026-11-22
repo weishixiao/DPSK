@@ -143,6 +143,11 @@ jobs:
             | awk '{gsub(/%/,"%25"); printf "%s | ", $0}' \
             | fold -w 180 | tail -n 10 \
             | sed 's/^/::error::engine log: /' || true
+          # The tail above is a V8 fatal dump, cut off before the one line that
+          # says why (heap limit, a failed assertion): the frames it does show are
+          # node's own start-up. Put those lines up on their own as well.
+          grep -a -E 'FATAL ERROR|out of memory|error TS[0-9]+' "$RUNNER_TEMP/engine.log" \
+            | head -n 5 | cut -c1-400 | sed 's/^/::error::engine log: /' || true
 
   ipa:
     name: unsigned ipa

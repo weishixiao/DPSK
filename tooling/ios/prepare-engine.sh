@@ -122,7 +122,13 @@ stage_harness() {
   # stays blank, with no engine-log line to say why: the missing page is a
   # request-time concern of the frontend-static owner, not a boot failure.
   pnpm run build:lib:host
-  pnpm run build:lib:client
+  # `build:lib:host` already asks node for an 8 GB old space: the host program is
+  # big. The client aggregate (`tsconfig.client.json`, ~130 referenced projects)
+  # is the same size of program and was left on node's default ceiling, which a
+  # 7 GB macOS runner reaches — `tsc -b tsconfig.client.json` aborted with
+  # SIGABRT (exit 134, V8's fatal dump in the log) and took the deploy with it.
+  # The ceiling only has to sit above what the build actually needs.
+  NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=8192" pnpm run build:lib:client
   pnpm run build:web
   [ -f apps/web/dist/index.html ] \
     || fail "build:web produced no apps/web/dist/index.html — the app window would load a blank page"
