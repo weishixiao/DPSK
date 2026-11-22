@@ -19,6 +19,8 @@
 //   DPSK_ENGINE_ROOT  this directory
 //   DPSK_PORT         loopback port to serve on (EngineRuntime.defaultPort)
 //   DSH_HOME          harness state directory (Application Support/dsh)
+//   DPSK_WORKSPACE    the writable directory the harness treats as its root
+//   DPSK_LOG          the log file the app's settings screen names
 //   HOME, TMPDIR      the app container's, since the bundle is read-only
 
 import { appendFileSync, existsSync } from 'node:fs'
@@ -36,7 +38,12 @@ const presetPatch = join(engineRoot, 'ios-preset.patch.yml')
 const port = Number(process.env.DPSK_PORT ?? 8799)
 
 const home = process.env.DSH_HOME
-const logPath = join(home ?? engineRoot, '..', 'Logs', 'engine.log')
+// The app owns both paths, because only it can name a directory its sandbox
+// allows: `HOME` is the container root, so deriving the workspace from it walks
+// out of the sandbox and `mkdir` fails with EPERM. Running this file from a Mac
+// instead (no app env) keeps everything under `DSH_HOME`.
+const logPath = process.env.DPSK_LOG ?? join(home ?? engineRoot, 'Logs', 'engine.log')
+const workspace = process.env.DPSK_WORKSPACE ?? join(home ?? engineRoot, 'workspace')
 
 /** Append one line to the engine log, and keep going if the log is unwritable. */
 function log(line) {
@@ -56,6 +63,12 @@ process.on('unhandledRejection', (reason) => {
   log(`unhandledRejection: ${reason?.stack ?? reason}`)
 })
 
+// Node exits 0 when the module finishes without keeping the loop alive, and the
+// app only sees its port wait time out. Leave a trace of that exit either way.
+process.on('exit', (code) => {
+  log(`node exited with ${code}; the engine is no longer serving`)
+})
+
 // Mirror Node's own console output into the log: on iOS stdout goes nowhere.
 for (const stream of ['stdout', 'stderr']) {
   const original = process[stream].write.bind(process[stream])
@@ -65,27 +78,27 @@ for (const stream of ['stdout', 'stderr']) {
   }
 }
 
-// The harness treats `process.cwd()` as the workspace root and writes there; the
-// bundle is read-only, so it runs from Documents/workspace, created on boot.
-const workspace = process.env.DPSK_WORKSPACE ?? join(dirname(process.env.HOME ?? engineRoot), 'workspace')
-await mkdir(workspace, { recursive: true })
-process.chdir(workspace)
-
-// The CLI parses `process.argv.slice(2)`; argv[0] and argv[1] only have to exist.
-process.argv = [
-  process.execPath,
-  binary,
-  '--profile', 'web',
-  '--patch', patch,
-  ...(existsSync(presetPatch) ? ['--patch', presetPatch] : []),
-  '--host', '127.0.0.1',
-  '--port', String(port),
-  '--no-open',
-]
-
-log(`starting harness: ${binary} on 127.0.0.1:${port} (cwd ${workspace})`)
-
+// The harness treats `process.cwd()` as the workspace root and writes there, so
+// a workspace that cannot be created or entered is fatal — but it is reported as
+// one failure rather than as a silent exit at import time.
 try {
+  await mkdir(workspace, { recursive: true })
+  process.chdir(workspace)
+
+  // The CLI parses `process.argv.slice(2)`; argv[0] and argv[1] only have to exist.
+  process.argv = [
+    process.execPath,
+    binary,
+    '--profile', 'web',
+    '--patch', patch,
+    ...(existsSync(presetPatch) ? ['--patch', presetPatch] : []),
+    '--host', '127.0.0.1',
+    '--port', String(port),
+    '--no-open',
+  ]
+
+  log(`starting harness: ${binary} on 127.0.0.1:${port} (cwd ${workspace})`)
+
   const { runCli } = await import(pathToFileURL(binary).href)
   await runCli()
   log('harness returned; the engine is no longer serving')

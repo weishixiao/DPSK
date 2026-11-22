@@ -70,6 +70,28 @@ actor EngineBoot {
 
     private var state: State = .idle
 
+    /// How the engine thread's `node::Start` call ended, if it has.
+    ///
+    /// Node returns 0 from a script that finished or threw before it could
+    /// serve, and a wait that only knows about the port reports that as a
+    /// minute-long timeout with no reason attached.
+    private final class ExitStatus: @unchecked Sendable {
+        private let lock = NSLock()
+        private var status: Int32?
+
+        func record(_ value: Int32) {
+            lock.lock()
+            status = value
+            lock.unlock()
+        }
+
+        var value: Int32? {
+            lock.lock()
+            defer { lock.unlock() }
+            return status
+        }
+    }
+
     func start(runtime: EngineRuntime) async throws -> URL {
         switch state {
         case let .ready(url):
@@ -85,8 +107,9 @@ actor EngineBoot {
         state = .booting
         do {
             try prepareDirectories()
-            launch(runtime: runtime)
-            let url = try await waitForPort(runtime.port)
+            let exit = ExitStatus()
+            launch(runtime: runtime, exit: exit)
+            let url = try await waitForPort(runtime.port, exit: exit)
             EnginePaths.clearBootMarker()
             state = .ready(url)
             return url
@@ -111,13 +134,18 @@ actor EngineBoot {
 
     // MARK: - Boot
 
-    private func launch(runtime: EngineRuntime) {
+    private func launch(runtime: EngineRuntime, exit: ExitStatus) {
         setenv("DPSK_ENGINE_ROOT", runtime.root.path, 1)
         setenv("DPSK_PORT", String(runtime.port), 1)
         setenv("DSH_HOME", EnginePaths.home.path, 1)
         setenv("HOME", EnginePaths.container.path, 1)
         // Node asks for a writable TMPDIR; the app's own is the only one it may use.
         setenv("TMPDIR", NSTemporaryDirectory(), 1)
+        // The two paths `host.mjs` must not re-derive: `HOME` is the container
+        // root, so a `..` from it lands outside the sandbox, and the workspace it
+        // computes that way cannot even be created (`EPERM`).
+        setenv("DPSK_WORKSPACE", EnginePaths.workspace.path, 1)
+        setenv("DPSK_LOG", EnginePaths.logs.appendingPathComponent("engine.log").path, 1)
 
         var arguments = [Bundle.main.executablePath ?? "dpsk"]
         // V8 only JITs when the signature grants it; a sideloaded build cannot,
@@ -136,7 +164,7 @@ actor EngineBoot {
         // `host.mjs` never got far enough to write one.
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
 
-        let thread = Thread { [arguments, logURL] in
+        let thread = Thread { [arguments, logURL, exit] in
             let started = Date()
             // Written before the call, and without buffering: if `node::Start`
             // aborts the process (a signature iOS will not accept on
@@ -145,6 +173,9 @@ actor EngineBoot {
             // says the crash happened inside Node.
             Self.appendLine("boot: calling node::Start, jit=\(EnginePaths.jitEntitled) args=\(arguments.joined(separator: " "))\n", to: logURL)
             let status = DPSKNodeStart(arguments)
+            // Recorded before the log write: the port wait reads it to report a
+            // boot that ended rather than one that is still working.
+            exit.record(status)
             let line = "[engine] exited with \(status) after \(Int(Date().timeIntervalSince(started)))s\n"
             if let handle = try? FileHandle(forWritingTo: logURL) {
                 handle.seekToEndOfFile()
@@ -184,7 +215,7 @@ actor EngineBoot {
     }
 
     /// Wait for the loopback port to answer anything at all.
-    private func waitForPort(_ port: Int) async throws -> URL {
+    private func waitForPort(_ port: Int, exit: ExitStatus) async throws -> URL {
         guard let url = URL(string: "http://127.0.0.1:\(port)/") else {
             throw EngineRuntime.EngineError.bootFailed("端口号无效")
         }
@@ -198,6 +229,12 @@ actor EngineBoot {
         let session = URLSession(configuration: configuration)
 
         while Date() < deadline {
+            // Node returning is the one failure that is not a timeout: report it
+            // now rather than sitting out the rest of the minute.
+            if let status = exit.value {
+                session.finishTasksAndInvalidate()
+                throw EngineRuntime.EngineError.bootFailed("Node 退出了（状态 \(status)）")
+            }
             var request = URLRequest(url: url)
             request.timeoutInterval = 2
             if let (_, response) = try? await session.data(for: request),

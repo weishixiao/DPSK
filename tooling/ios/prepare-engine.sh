@@ -128,6 +128,11 @@ stage_harness() {
   # machine-specific key for a package that lives in this checkout.
   pnpm --config.strictDepBuilds=false --filter @deepseek-ai/dsh --prod deploy "$engine_dir/runtime/harness"
 
+  # `deploy` carries the deployed package's `dependencies` and leaves peer
+  # dependencies to the consumer. See stage_harness_peers for what that costs and
+  # how the gaps are closed.
+  stage_harness_peers "$engine_dir/runtime/harness"
+
   # `host.mjs` imports `lib/bin.js`; without it the app boots and fails at once,
   # so the staging step refuses to leave a half-filled Engine/ behind.
   [ -f "$engine_dir/runtime/harness/lib/bin.js" ] \
@@ -135,6 +140,80 @@ stage_harness() {
   [ -f "$engine_dir/host.mjs" ] || fail "Engine/host.mjs is missing"
 
   du -sh "$engine_dir/runtime/harness"
+}
+
+# ── the peer packages `pnpm deploy` does not carry ───────────────────────────
+
+# `deploy` copies the deployed package's `dependencies` and nothing else, while a
+# peer dependency is the consumer's to provide. The consumers are the packages in
+# that closure: `packages/util/atomic-write` peers `@deepseek-ai/dsh-error`,
+# `packages/shell/tool-bash` peers `@deepseek-ai/dsh-shell`, and so on -- service
+# definitions whose implementation imports them at run time. In the repository the
+# link is always there, because the workspace installs every package at the root;
+# in the deployed tree it is not, so the first import throws
+# `ERR_MODULE_NOT_FOUND` and the app can only report that the engine exited.
+# Eleven such packages were missing from a deploy of `@deepseek-ai/dsh` when this
+# was written.
+#
+# So the deployed tree is checked against itself: every `@deepseek-ai/*` module the
+# first-party output imports has to resolve inside it. A gap is copied in from this
+# checkout, and a gap this checkout does not build fails the staging step. Fill,
+# then check again -- a copied package imports modules of its own.
+
+# The `@deepseek-ai/*` modules the deployed first-party output imports, one per
+# line, sorted. Only built output is read: the CLI's own `lib/`, and `lib/` inside
+# each deployed workspace package. A client-only package ships a bundle for the
+# WebView instead of `lib/`, and the browser resolves those imports, not Node.
+harness_imports() {
+  local harness="$1"
+  {
+    grep -RhoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
+      --include='*.js' --include='*.mjs' \
+      "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null || true
+  } | sed -E "s/.*['\"](@deepseek-ai\/[A-Za-z0-9._-]+)$/\1/" | sort -u
+}
+
+# The modules in that list the deployed tree cannot resolve. `deploy` writes the
+# store to `node_modules/.pnpm/node_modules` and each direct dependency beside it,
+# and a package added by stage_harness_peers lands in `node_modules` itself; all
+# three are on the path Node walks from a package inside the tree.
+harness_missing_peers() {
+  local harness="$1" name
+  harness_imports "$harness" | while IFS= read -r name; do
+    if [ ! -e "$harness/node_modules/$name" ] \
+      && [ ! -e "$harness/node_modules/.pnpm/node_modules/$name" ]; then
+      printf '%s\n' "$name"
+    fi
+  done
+}
+
+stage_harness_peers() {
+  local harness="$1" passes=0 gaps name source target
+  while :; do
+    passes=$((passes + 1))
+    [ "$passes" -le 8 ] \
+      || fail "the deployed harness still imports packages that are not in it: $(harness_missing_peers "$harness" | tr '\n' ' ')"
+    gaps=$(harness_missing_peers "$harness")
+    [ -n "$gaps" ] || return 0
+    # A here-document rather than a pipe: the loop has to run in this shell, or a
+    # `fail` inside it would only end a subshell and the staging step would carry
+    # on with a tree that is known to be incomplete.
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      source="$root/node_modules/$name"
+      [ -d "$source" ] \
+        || fail "the deployed harness imports $name, and this checkout does not install it"
+      target="$harness/node_modules/$name"
+      say "the deploy left $name out; taking it from the workspace"
+      rm -rf "${target:?}"
+      mkdir -p "$(dirname "$target")"
+      # `-L` because node_modules/<name> is a link into the workspace: the deployed
+      # tree has to carry the package itself, not a path back into the checkout.
+      cp -RL "$source" "$target"
+    done <<EOF
+$gaps
+EOF
+  done
 }
 
 # ── Node: the iPhoneOS build of the runtime the app links ────────────────────

@@ -46,8 +46,10 @@ Node 自带的依赖打重复符号，也不便替换。代价是 dylib 必须�
 
 1. 建目录：`Application Support/dsh`（`DSH_HOME`）、`Documents/workspace`
    （`process.cwd()`，harness 在这里读写）、`Library/Logs`。
-2. 设环境：`DPSK_ENGINE_ROOT`、`DPSK_PORT`、`DSH_HOME`、`HOME`、`TMPDIR`——全在
-   App 容器里，App 沙盒之外哪也写不了。
+2. 设环境：`DPSK_ENGINE_ROOT`、`DPSK_PORT`、`DSH_HOME`、`HOME`、`TMPDIR`、
+   `DPSK_WORKSPACE`、`DPSK_LOG`——全在 App 容器里，App 沙盒之外哪也写不了。
+   后两个由 App 直接给出走不通的路径，`host.mjs` 不再自己用 `HOME` 推：`HOME`
+   是容器根，从它 `..` 会落到沙盒外，`mkdir` 直接 `EPERM`。
 3. 起一个 8 MB 栈的线程跑 `DPSKNodeStart(argv)`（`Sources/NodeBridge.mm` 里的
    `node::Start`）。Node 只能在进程里启动一次，所以启动失败就直接说清原因，不重试。
 4. 轮询 `http://127.0.0.1:8799/`，通了就把地址交给 WebView，60 秒没通报超时。
