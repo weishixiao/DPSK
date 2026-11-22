@@ -401,65 +401,6 @@ workspace_package_dir() {
   ' "$root" "$1"
 }
 
-# Put one package into the deployed tree. A package the deploy's store already
-# holds is linked to it: the bytes are there, and the store entry resolves its own
-# dependencies. Anything else is copied out of this checkout, which is the only
-# case that leaves a package without sibling links.
-# Whether `$name` resolves from the files that import it, which is the question
-# Node asks at run time.
-#
-# Resolving it from the tree root answers a different question and can pass while
-# every import still fails: a store package finds its peers in
-# `.pnpm/<pkg>@<hash>/node_modules`, which shadows the root, so a broken entry
-# there wins over a good copy at the root.
-harness_package_loads() {
-  local harness="$1" name="$2"
-  # Resolve the specifiers the importing files actually use, not the bare package
-  # name. A package that publishes only `exports` subpaths (`@scope/pkg` with no
-  # `main`) cannot be resolved by its own name at all, so asking that way reports
-  # a present package as missing -- which is exactly what it did for
-  # `@deepseek-ai/node-addon-system`, whose only entry points are subpaths.
-  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]$name(/[A-Za-z0-9._-]+)*" \
-    --include='*.js' --include='*.mjs' \
-    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
-    | head -n 40 \
-    | node -e '
-      const fs = require("fs");
-      const { createRequire } = require("module");
-      const name = process.argv[1];
-      const SPEC = /[\x27"](@[^\x27"]+)[\x27"]/;
-      const seen = new Set();
-      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
-        if (line === "") continue;
-        // <file>:<matched text>. The matched text holds no colon of its own, so
-        // the last one separates them whatever the path contains.
-        const cut = line.lastIndexOf(":");
-        if (cut < 0) continue;
-        const file = line.slice(0, cut);
-        const quoted = line.slice(cut + 1).match(SPEC);
-        if (quoted === null) continue;
-        const specifier = quoted[1];
-        // Only this package and its subpaths are this package question.
-        if (specifier !== name && !specifier.startsWith(name + "/")) continue;
-        if (seen.has(specifier)) continue;
-        seen.add(specifier);
-        let path = file;
-        try {
-          path = fs.realpathSync(file);
-        } catch {
-          // A file we cannot follow cannot answer either.
-        }
-        try {
-          createRequire(path).resolve(specifier);
-          process.exit(0);
-        } catch {
-          // Try the next import site.
-        }
-      }
-      process.exit(1);
-    ' "$name"
-}
-
 stage_harness_package() {
   local harness="$1" name="$2"
   # Its own statement: `local x=1 y=$x` expands `$x` before `local` runs, which
@@ -482,26 +423,24 @@ stage_harness_package() {
     say "the deploy left $name out; linking it from the store"
     rm -f "${target:?}"
     ln -s "$link" "$target"
-    # A link that exists is not a package that loads. The store entry can be
-    # present and still lack what the package resolves at run time -- its own
-    # `lib/`, or a dependency of its own -- and a link to it answers `-e` while
-    # every import through it fails. Ask Node instead of the filesystem.
-    if [ -e "$target" ] && harness_package_loads "$harness" "$name"; then
+    # A link that exists is not a package that loads: the store entry can be
+    # present and still lack what this package resolves at run time. Presence is
+    # all this function can decide -- whether the whole tree loads is
+    # stage_harness_peers' question, answered once every name has been staged.
+    if [ -e "$target" ]; then
       return 0
     fi
-    # The link is gone either way; what replaces it has to be a copy that actually
-    # resolves. The store's own directory is tried first because it is what the
-    # deploy already read, but it is exactly the copy under suspicion here, so a
-    # workspace copy follows when it is no better.
     say "the store's $name does not resolve from node_modules; copying it instead"
     rm -f "${target:?}"
     source=$(cd "$harness/node_modules/.pnpm/node_modules/$name" && pwd -P) || source=""
     if [ -n "$source" ]; then
       cp -RL "$source" "$target"
-      if harness_package_loads "$harness" "$name"; then
+      # A store copy can be a link farm into a store entry that the deploy did not
+      # carry in full; the workspace copy below is the one this script owns.
+      if [ -e "$target/package.json" ]; then
         return 0
       fi
-      say "the store's $name still does not load; taking it from the workspace"
+      say "the store's $name has no manifest; taking it from the workspace"
     fi
     rm -rf "${target:?}"
     source=$(workspace_package_dir "$name") \
@@ -510,10 +449,6 @@ stage_harness_package() {
     tar -C "$source" -chf - --exclude='*node_modules*' . \
       | tar -C "$target" -xf - \
       || fail "could not copy $name out of this checkout"
-    # The last attempt, so it is checked: a copy that does not load would send
-    # stage_harness_peers round again with the same name and no new answer.
-    harness_package_loads "$harness" "$name" \
-      || fail "$name was copied from the workspace and still does not resolve from the files that import it"
     return 0
   fi
   source=$(workspace_package_dir "$name") \
@@ -532,8 +467,6 @@ stage_harness_package() {
   tar -C "$source" -chf - --exclude='*node_modules*' . \
     | tar -C "$target" -xf - \
     || fail "could not copy $name out of this checkout"
-  harness_package_loads "$harness" "$name" \
-    || fail "$name was copied from the workspace and still does not resolve from the files that import it"
 }
 
 # The imports that resolve to nothing even though the directory check above
@@ -619,6 +552,11 @@ stage_harness_peers() {
 $gaps
 EOF
   done
+  # The loop only guarantees every name is *present*. Presence is not loading: a
+  # copy can carry a manifest and still lack the entry its `exports` names, and a
+  # store link can point at a partial entry. `harness_unresolvable_imports` below
+  # resolves each import from its own file, which is what turns that into a line in
+  # the build log instead of a plugin that fails to mount on the device.
   local unresolvable
   unresolvable=$(harness_unresolvable_imports "$harness")
   if [ -n "$unresolvable" ]; then
