@@ -202,8 +202,27 @@ jobs:
           fail-on-cache-miss: true
       - name: Check the runtime matches the iOS overlays
         run: python3 tooling/ios/check-runtime.py --engine app/ios/Engine
+      # The build number advances on every build, so its counter has to outlive the
+      # run: a fresh checkout has no memory of the last one. Restore and save are
+      # separate so a run keeps the highest value seen instead of racing one key.
+      - name: Restore the build counter
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/build-counter
+          key: ios-build-counter-${{ github.run_id }}
+          restore-keys: |
+            ios-build-counter-
       - name: Build unsigned ipa
+        env:
+          DSH_IOS_BUILD_COUNTER: ${{ runner.temp }}/build-counter
         run: tooling/ios/build.sh iphoneos "$RUNNER_TEMP/ipa"
+      - name: Keep the build counter
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/build-counter
+          key: ios-build-counter-${{ github.run_id }}
       - name: Upload the ipa
         uses: actions/upload-artifact@v4
         with:

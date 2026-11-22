@@ -150,6 +150,26 @@ stage_harness() {
   # `deploy` carries the deployed package's `dependencies` and leaves peer
   # dependencies to the consumer. See stage_harness_peers for what that costs and
   # how the gaps are closed.
+  # `native/system` is a separate tsconfig root the host build does not reach.
+  #
+  # `@deepseek-ai/node-addon-system` exports `./landlock-run` -> `./lib/index.js`,
+  # and `sandbox-local` imports that subpath statically. The host aggregate
+  # (`tsc -b` over `tsconfig.host.json`) does reference the entry project, but
+  # `build:lib:host` drives `host-libraries`, whose compiler step only walks the
+  # aggregate's references from `packages/`; the deployment therefore carried the
+  # package with no `lib/`, and every import through the subpath failed at run
+  # time while the tree looked complete.
+  #
+  # Building it here is the narrow fix: it is one project, it is already declared
+  # composite with `outDir: lib`, and it is needed by a package the web profile
+  # mounts on iOS.
+  # This function runs from the repository root (the lockfile check above proves
+  # it), and `pnpm` is already required here.
+  if [ -d native/system ]; then
+    ( cd native/system && pnpm run build:ts ) \
+      || fail "native/system's TypeScript did not build — sandbox-local imports its landlock-run subpath"
+  fi
+
   stage_harness_peers "$engine_dir/runtime/harness"
 
   # Before anything is measured or staged on top: a deploy made on a Mac carries
@@ -203,30 +223,86 @@ harness_imports() {
     grep -RhoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
       --include='*.js' --include='*.mjs' \
       "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null || true
-  } | sed -E "s/.*['\"](@deepseek-ai\/[A-Za-z0-9._-]+)$/\1/" | sort -u
+  } | sed -E "s/.*['\"](@deepseek-ai\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*)$/\1/" | sort -u
 }
 
-# The modules in that list the deployed tree cannot resolve. `deploy` writes the
-# store to `node_modules/.pnpm/node_modules` and each direct dependency beside it,
-# and a package added by stage_harness_peers lands in `node_modules` itself; all
-# three are on the path Node walks from a package inside the tree.
+# The modules in that list the deployed tree cannot resolve, asked the way Node asks.
+#
+# Checking a fixed pair of directories is not the same question. `deploy` puts a
+# store package's own dependencies in `.pnpm/<pkg>@<hash>/node_modules`, beside the
+# package rather than at the tree root, so a name can be resolvable from the root
+# and still be unreachable from the file that imports it. That is what a device
+# showed: `dsh-bash-sandbox` is a store package, its peer `dsh-bash-local` was never
+# staged, and the old root-level check saw a directory the importing file's real
+# path never walks to -- five plugins failed to import while the check reported
+# nothing.
+#
+# So each import is resolved from the file that has it, after `realpath`: the same
+# algorithm Node runs. A name no import site can reach is a gap; one that some
+# sites reach is still reported, because whatever fails to import is a plugin that
+# will not mount.
 harness_missing_peers() {
-  local harness="$1" name
-  harness_imports "$harness" | while IFS= read -r name; do
-    if [ ! -e "$harness/node_modules/$name" ] \
-      && [ ! -e "$harness/node_modules/.pnpm/node_modules/$name" ]; then
-      printf '%s\n' "$name"
-    fi
-  done
+  local harness="$1"
+  # Both the top-level links and the store they point at. `grep -R` does not
+  # descend through a symbolic link, and `pnpm deploy` makes every package
+  # `node_modules/@deepseek-ai/<name>` a link into `.pnpm`; a package that exists
+  # only in the store would otherwise never be read, and its peers never reported.
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
+    --include='*.js' --include='*.mjs' \
+    "$harness/lib" \
+    "$harness"/node_modules/@deepseek-ai/*/lib \
+    "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    | node -e '
+      const fs = require("fs");
+      const { createRequire } = require("module");
+      // `<file>:<matched text>`: the matched text holds no colon of its own, so
+      // the last one in the line separates them whatever the path contains.
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/;
+      const unresolved = new Set();
+      const realpaths = new Map();
+      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
+        const found = line.match(LINE);
+        if (found === null) continue;
+        const file = found[1];
+        const name = found[2];
+        let path = realpaths.get(file);
+        if (path === undefined) {
+          try {
+            path = fs.realpathSync(file);
+          } catch {
+            path = file;
+          }
+          realpaths.set(file, path);
+        }
+        try {
+          createRequire(path).resolve(name);
+        } catch {
+          unresolved.add(name);
+        }
+      }
+      for (const name of unresolved) console.log(name);
+    '
 }
 
 # The packages in the tree that are real directories instead of links into the
 # store: the ones this script copied. They are the only ones whose dependencies
 # have to be resolved from `node_modules` itself.
-harness_copied_packages() {
+# Every first-party package in the tree, copied or linked into the store.
+#
+# This used to take only real directories, on the theory that a link resolves its
+# dependencies the way pnpm laid them out. True for the link, and irrelevant to
+# what gets mounted: the package a link points at is still a package whose own
+# `peerDependencies` have to be present at the tree root, because the copier
+# never made it a sibling. `dsh-bash-sandbox` is exactly that -- a store package
+# that peers on `@deepseek-ai/dsh-bash-local` -- and skipping it left five peers
+# unstaged while this function reported no gaps.
+harness_first_party_packages() {
   local harness="$1" dir
-  for dir in "$harness"/node_modules/* "$harness"/node_modules/@*/*; do
-    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+  # Only the packages this repository builds. A third-party package's
+  # dependencies are the deploy's business, and there is no workspace copy to
+  # stage in their place -- staging one is a hard failure, not a repair.
+  for dir in "$harness"/node_modules/@deepseek-ai/* \
+             "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*; do
     case "${dir##*/}" in
       .pnpm|.bin|node_modules) continue ;;
     esac
@@ -234,28 +310,50 @@ harness_copied_packages() {
   done
 }
 
-# The dependency names a manifest declares. `dependencies` only: a peer is the
-# consumer's to provide, and an optional dependency is absent by design on a
-# platform that does not offer it -- the platform-specific prebuilds are exactly
-# that.
-manifest_dependencies() {
-  node -e '
-    const { readFileSync } = require("fs");
-    const manifest = JSON.parse(readFileSync(process.argv[1], "utf8"));
-    for (const name of Object.keys(manifest.dependencies || {})) console.log(name);
-  ' "$1"
-}
-
 # The dependencies of the copied packages that the tree cannot resolve from them.
 harness_missing_copied_dependencies() {
-  local harness="$1" dir manifest dep
-  while IFS= read -r dir; do
-    manifest="$dir/package.json"
-    while IFS= read -r dep; do
-      [ -n "$dep" ] || continue
-      [ -e "$harness/node_modules/$dep" ] || printf '%s\n' "$dep"
-    done < <(manifest_dependencies "$manifest")
-  done < <(harness_copied_packages "$harness")
+  local harness="$1"
+  # One process for the whole tree: the packages now include every store entry,
+  # and starting Node per manifest would spend minutes on process spawns alone.
+  harness_first_party_packages "$harness" \
+    | node -e '
+      const fs = require("fs");
+      const path = require("path");
+      const harness = process.argv[1];
+      const missing = new Set();
+      for (const dir of fs.readFileSync(0, "utf8").split("\n")) {
+        if (dir === "") continue;
+        let manifest;
+        try {
+          manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+        } catch {
+          continue;
+        }
+        // A real directory under the harness is a copy this script made; a link
+        // points into the store, where pnpm already laid out its dependencies.
+        // Recorded per package, not by directory name: the basename of a scoped
+        // package directory is only its last path segment.
+        let isCopy = false;
+        try {
+          isCopy = fs.lstatSync(dir).isDirectory();
+        } catch {
+          // Unreadable means not a copy we can reason about.
+        }
+        // An optional dependency is absent by design on a platform that does not
+        // offer it -- the platform prebuilds are exactly that.
+        for (const key of ["dependencies", "peerDependencies"]) {
+          for (const name of Object.keys(manifest[key] ?? {})) {
+            // First-party names are always this step concern: a workspace copy
+            // exists to stage. A third-party name is only this step concern when
+            // the package holding it was copied, because a copy has no siblings and
+            // therefore cannot resolve what a store package would.
+            if (!name.startsWith("@deepseek-ai/") && !isCopy) continue;
+            if (!fs.existsSync(path.join(harness, "node_modules", name))) missing.add(name);
+          }
+        }
+      }
+      for (const name of missing) console.log(name);
+    ' "$harness"
 }
 
 # Where this checkout keeps a package. Two answers, in this order.
@@ -328,10 +426,6 @@ workspace_package_dir() {
   ' "$root" "$1"
 }
 
-# Put one package into the deployed tree. A package the deploy's store already
-# holds is linked to it: the bytes are there, and the store entry resolves its own
-# dependencies. Anything else is copied out of this checkout, which is the only
-# case that leaves a package without sibling links.
 stage_harness_package() {
   local harness="$1" name="$2"
   # Its own statement: `local x=1 y=$x` expands `$x` before `local` runs, which
@@ -354,16 +448,32 @@ stage_harness_package() {
     say "the deploy left $name out; linking it from the store"
     rm -f "${target:?}"
     ln -s "$link" "$target"
+    # A link that exists is not a package that loads: the store entry can be
+    # present and still lack what this package resolves at run time. Presence is
+    # all this function can decide -- whether the whole tree loads is
+    # stage_harness_peers' question, answered once every name has been staged.
     if [ -e "$target" ]; then
       return 0
     fi
-    # A link that does not resolve is worse than no link at all: Node reports the
-    # module as absent either way, but only the copy shows what was staged.
     say "the store's $name does not resolve from node_modules; copying it instead"
     rm -f "${target:?}"
-    source=$(cd "$harness/node_modules/.pnpm/node_modules/$name" && pwd -P) \
-      || fail "the store's $name is unreachable"
-    cp -RL "$source" "$target"
+    source=$(cd "$harness/node_modules/.pnpm/node_modules/$name" && pwd -P) || source=""
+    if [ -n "$source" ]; then
+      cp -RL "$source" "$target"
+      # A store copy can be a link farm into a store entry that the deploy did not
+      # carry in full; the workspace copy below is the one this script owns.
+      if [ -e "$target/package.json" ]; then
+        return 0
+      fi
+      say "the store's $name has no manifest; taking it from the workspace"
+    fi
+    rm -rf "${target:?}"
+    source=$(workspace_package_dir "$name") \
+      || fail "the deployed harness needs $name, and this checkout has no workspace package by that name"
+    mkdir -p "$target"
+    tar -C "$source" -chf - --exclude='*node_modules*' . \
+      | tar -C "$target" -xf - \
+      || fail "could not copy $name out of this checkout"
     return 0
   fi
   source=$(workspace_package_dir "$name") \
@@ -402,15 +512,17 @@ stage_harness_package() {
 harness_unresolvable_imports() {
   local harness="$1"
   [ -f "$harness/lib/bin.js" ] || return 0
-  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
     --include='*.js' --include='*.mjs' \
-    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    "$harness/lib" \
+    "$harness"/node_modules/@deepseek-ai/*/lib \
+    "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*/lib 2>/dev/null \
     | node -e '
       const fs = require("fs");
       const { createRequire } = require("module");
       // `<file>:<matched text>`: the matched text carries no colon, so the last
       // one in the line is the separator, whatever the path holds.
-      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+)$/;
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/;
       const failing = new Map();
       const resolving = new Set();
       const realpaths = new Map();
@@ -454,11 +566,24 @@ stage_harness_peers() {
     # on with a tree that is known to be incomplete.
     while IFS= read -r name; do
       [ -n "$name" ] || continue
-      stage_harness_package "$harness" "$name"
+      # A gap is an import site's specifier, which may name a subpath
+      # (`@scope/pkg/sub`). Staging works on packages, so the subpath is dropped
+      # here; the package is what has to be present, and the subpath belongs to its
+      # own `exports`.
+      case "$name" in
+        # Scoped with a subpath: keep the scope and the package name.
+        @*/*/*) stage_harness_package "$harness" "${name%/*}" ;;
+        *) stage_harness_package "$harness" "$name" ;;
+      esac
     done <<EOF
 $gaps
 EOF
   done
+  # The loop only guarantees every name is *present*. Presence is not loading: a
+  # copy can carry a manifest and still lack the entry its `exports` names, and a
+  # store link can point at a partial entry. `harness_unresolvable_imports` below
+  # resolves each import from its own file, which is what turns that into a line in
+  # the build log instead of a plugin that fails to mount on the device.
   local unresolvable
   unresolvable=$(harness_unresolvable_imports "$harness")
   if [ -n "$unresolvable" ]; then
