@@ -50,14 +50,17 @@ export TMPDIR="$WORK"
 # session write during the smoke does not fail for a platform reason; a failure
 # is a note, not a verdict.
 ADDON_ROOT="$ENGINE/runtime/harness/node_modules/@deepseek-ai"
+# DPSK keeps Node's headers under Vendor, not beside Engine (prepare-engine.sh
+# stages them there); the boot job restores that directory with the cache.
+HEADERS="$ROOT/app/ios/Vendor/node/include/node"
 if [ "$(uname -s)" = Darwin ] && [ -f "$ROOT/native/system/packages/entry/src/flock.c" ] &&
-   [ -d "$ENGINE/include/node" ]; then
+   [ -d "$HEADERS" ]; then
   ARCH=$(node -p 'process.arch' 2>/dev/null || echo arm64)
   PKG="$ADDON_ROOT/node-addon-system-darwin-$ARCH"
   [ -d "$PKG" ] || cp -R "$ADDON_ROOT/node-addon-system-darwin-arm64" "$PKG" 2>/dev/null || true
   if [ -d "$PKG/bin" ]; then
     clang -bundle -undefined dynamic_lookup -DNAPI_VERSION=8 -O2 \
-      -I "$ENGINE/include/node" -o "$PKG/bin/system.node" \
+      -I "$HEADERS" -o "$PKG/bin/system.node" \
       "$ROOT/native/system/packages/entry/src/flock.c" ||
       echo "engine-smoke: could not build the host flock addon (continuing)" >&2
     # macOS refuses an unsigned bundle in a hardened host; the ipa's copy is
@@ -74,7 +77,7 @@ RB_PKG=$(find -L "$ENGINE/runtime/harness/node_modules" -maxdepth 5 -type d \
 RB="$RB_PKG/prebuilt/darwin-arm64-napi-v9.node"
 if [ -n "$RB_PKG" ] && [ -f "$RB" ]; then
   if [ "$(node -p 'process.arch' 2>/dev/null || echo arm64)" = arm64 ]; then
-    "$ROOT/tooling/ios/build-require-builtin.sh" macosx "$RB" "$ENGINE/include/node" ||
+    "$ROOT/tooling/ios/build-require-builtin.sh" macosx "$RB" "$HEADERS" ||
       echo "engine-smoke: could not build the host require-builtin binding (the boot will say so)" >&2
   else
     echo "engine-smoke: host is not arm64; the engine only carries the darwin-arm64 package" >&2

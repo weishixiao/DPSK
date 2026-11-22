@@ -173,6 +173,22 @@ def main():
         if not runtime.has(entry):
             problems.append(f"fixed entry {entry} is missing")
 
+    # The overlay rows only name JS plugins. These two addons are loaded by
+    # package resolution at boot, and a missing one is exactly as fatal:
+    # `dsh-app-boot` cannot reach Node's loaders without require-builtin, and the
+    # session store needs flock. Check the file the package would map, not the
+    # package name alone.
+    if runtime.zip is None:
+        for pkg, rel in (
+            ("node-addon-require-builtin-darwin-arm64", "prebuilt/darwin-arm64-napi-v9.node"),
+            ("@deepseek-ai/node-addon-system-darwin-arm64", "bin/system.node"),
+        ):
+            directory, manifest = runtime.package(pkg)
+            if manifest is None:
+                problems.append(f"native addon {pkg} is not in the runtime")
+            elif not runtime.has(f"{directory}/{rel}"):
+                problems.append(f"native addon {pkg} has no {rel}")
+
     runtime.close()
     if problems:
         print("check-runtime: the runtime cannot serve these overlays:", file=sys.stderr)
