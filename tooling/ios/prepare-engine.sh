@@ -243,9 +243,15 @@ harness_imports() {
 # will not mount.
 harness_missing_peers() {
   local harness="$1"
+  # Both the top-level links and the store they point at. `grep -R` does not
+  # descend through a symbolic link, and `pnpm deploy` makes every package
+  # `node_modules/@deepseek-ai/<name>` a link into `.pnpm`; a package that exists
+  # only in the store would otherwise never be read, and its peers never reported.
   grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
     --include='*.js' --include='*.mjs' \
-    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    "$harness/lib" \
+    "$harness"/node_modules/@deepseek-ai/*/lib \
+    "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*/lib 2>/dev/null \
     | node -e '
       const fs = require("fs");
       const { createRequire } = require("module");
@@ -489,7 +495,9 @@ harness_unresolvable_imports() {
   [ -f "$harness/lib/bin.js" ] || return 0
   grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
     --include='*.js' --include='*.mjs' \
-    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    "$harness/lib" \
+    "$harness"/node_modules/@deepseek-ai/*/lib \
+    "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*/lib 2>/dev/null \
     | node -e '
       const fs = require("fs");
       const { createRequire } = require("module");
@@ -526,6 +534,45 @@ harness_unresolvable_imports() {
     '
 }
 
+
+# Temporary diagnostic for the staging investigation: for every first-party package
+# in the tree, report the specifiers its own lib imports that do not resolve from
+# it, whether the tree has the package at all, and which file it came from.
+harness_peer_report() {
+  local harness="$1"
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
+    --include='*.js' --include='*.mjs' \
+    "$harness/lib" \
+    "$harness"/node_modules/@deepseek-ai/*/lib \
+    "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    | node -e '
+      const fs = require("fs");
+      const { createRequire } = require("module");
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/;
+      const seen = new Set();
+      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
+        const found = line.match(LINE);
+        if (found === null) continue;
+        const file = found[1];
+        const name = found[2];
+        if (seen.has(file + "\\0" + name)) continue;
+        seen.add(file + "\\0" + name);
+        let real = file;
+        try {
+          real = fs.realpathSync(file);
+        } catch {
+          // keep the given path
+        }
+        try {
+          createRequire(real).resolve(name);
+        } catch (error) {
+          const pkg = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name.split("/")[0];
+          console.log("UNRESOLVED " + name + "  from " + real + "  code=" + (error.code ?? "?") + "  pkgdir=" + pkg);
+        }
+      }
+    '
+}
+
 stage_harness_peers() {
   local harness="$1" passes=0 gaps name
   while :; do
@@ -557,6 +604,10 @@ EOF
   # store link can point at a partial entry. `harness_unresolvable_imports` below
   # resolves each import from its own file, which is what turns that into a line in
   # the build log instead of a plugin that fails to mount on the device.
+  # Temporary diagnostic: what do the import sites actually see?
+  say "peer resolution report:"
+  harness_peer_report "$harness" >&2 || true
+
   local unresolvable
   unresolvable=$(harness_unresolvable_imports "$harness")
   if [ -n "$unresolvable" ]; then
