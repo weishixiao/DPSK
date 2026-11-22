@@ -65,6 +65,12 @@ struct EngineRuntime {
 
 /// One process-wide boot: Node cannot be started twice, so this owns the only
 /// attempt and remembers how it went.
+///
+/// The *platform* is initialized once per process, but a run is not: each start
+/// builds a fresh Environment on it (NodeBridge.mm, following dsh-Go's iOS host).
+/// So `failed` is not terminal -- a retry starts a new run, and `stop()` ends
+/// one without ending the app. Before that split, one failed boot meant the user
+/// had to quit and reopen the app.
 actor EngineBoot {
     static let shared = EngineBoot()
 
@@ -72,10 +78,15 @@ actor EngineBoot {
         case idle
         case booting
         case ready(URL)
+        /// A previous run ended. Retrying is allowed: it starts a new Environment.
         case failed(String)
     }
 
     private var state: State = .idle
+
+    /// The engine thread of the current run, so a stop can wait for it to unwind
+    /// before another start builds an Environment. Node allows one at a time.
+    private var engineThread: Thread?
 
     /// How the engine thread's `node::Start` call ended, if it has.
     ///
@@ -106,7 +117,9 @@ actor EngineBoot {
         case .booting:
             throw EngineRuntime.EngineError.alreadyBooting
         case let .failed(reason):
-            throw EngineRuntime.EngineError.bootFailed(reason)
+            // Retrying is the point of the Environment split. A previous failure
+            // says why *that* run ended, not that this one will.
+            Self.appendLine("[engine] retrying after: \(reason)\n", to: EnginePaths.logs.appendingPathComponent("engine.log"))
         case .idle:
             break
         }
@@ -125,6 +138,29 @@ actor EngineBoot {
             state = .failed(reason)
             throw error
         }
+    }
+
+    /// Ask the engine to stop and wait for its thread to unwind.
+    ///
+    /// The run is ended with `node::Stop` on its Environment, not by killing the
+    /// process: the app shares it. The state goes back to `idle`, so the next
+    /// `start` builds a new Environment instead of being told to restart the app.
+    /// Returns whether a run was actually active.
+    @discardableResult
+    func stop() async -> Bool {
+        let thread = engineThread
+        engineThread = nil
+        state = .idle
+        guard let thread else { return DPSKNodeStop() == 1 }
+        let stopped = DPSKNodeStop() == 1
+        // Poll instead of blocking: this actor must not hold the cooperative
+        // pool while Node unwinds its event loop.
+        let deadline = Date().addingTimeInterval(5)
+        while !thread.isFinished && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        EnginePaths.clearBootMarker()
+        return stopped
     }
 
     // MARK: - Directories
@@ -204,6 +240,7 @@ actor EngineBoot {
         // default secondary-thread stack is too small for a large session log.
         thread.stackSize = 8 << 20
         thread.name = "dpsk-engine"
+        engineThread = thread
         thread.start()
     }
 
