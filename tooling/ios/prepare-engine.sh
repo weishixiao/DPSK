@@ -1267,8 +1267,10 @@ stage_require_builtin() {
   # Where pnpm put it: the deployed tree keeps optional packages either beside
   # the consumer or at the top level, and a symlink is a directory to `find -L`.
   local package_dir
+  # `|| true`: under pipefail `head` closing the pipe is a failure, and an empty
+  # answer is the diagnostic the next line gives.
   package_dir=$(find -L "$engine_dir/runtime/harness/node_modules" -maxdepth 5 -type d \
-    -name 'node-addon-require-builtin-darwin-arm64' -print 2>/dev/null | head -n 1)
+    -name 'node-addon-require-builtin-darwin-arm64' -print 2>/dev/null | head -n 1 || true)
   [ -n "$package_dir" ] && [ -f "$package_dir/prebuilds.json" ] || fail \
     "the deploy left node-addon-require-builtin-darwin-arm64 out; the keep-list in prune_foreign_platform_packages must cover it"
 
