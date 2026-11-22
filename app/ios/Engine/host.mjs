@@ -35,7 +35,10 @@ const patch = join(engineRoot, 'ios.patch.yml')
 // the overlay; a missing file is skipped rather than fatal, because the overlay
 // alone still boots (the model just keeps a `bash` tool that cannot run).
 const presetPatch = join(engineRoot, 'ios-preset.patch.yml')
-const port = Number(process.env.DPSK_PORT ?? 8799)
+// 0 asks the system for a free port. The CLI prints the one it bound and the app
+// reads that line; a fixed port would collide with a previous run that has not
+// released its socket yet, which iOS cannot rule out.
+const port = Number(process.env.DPSK_PORT ?? 0)
 
 const home = process.env.DSH_HOME
 // The app owns both paths, because only it can name a directory its sandbox
@@ -97,7 +100,7 @@ try {
     '--no-open',
   ]
 
-  log(`starting harness: ${binary} on 127.0.0.1:${port} (cwd ${workspace})`)
+  log(`starting harness: ${binary} on 127.0.0.1:${port === 0 ? '(auto)' : port} (cwd ${workspace})`)
 
   const { runCli } = await import(pathToFileURL(binary).href)
   await runCli()

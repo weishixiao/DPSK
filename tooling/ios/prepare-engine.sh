@@ -491,11 +491,15 @@ EOF
 # imports one, and nothing on the device loses a capability it had: the binaries
 # were already unloadable.
 #
-# `node-addon-system-darwin-arm64` is the one name this rule cannot read: it is
-# this script's own flock addon, built for iOS and named for darwin because that
-# is what Node reports for `process.platform` here (see stage_system_addon). It is
-# staged after this runs; the keep-list is here so a later reordering cannot cost
-# the app its session store.
+# Two names this rule cannot read: both are native addons this script rebuilds
+# for iOS and leaves named for darwin, because that is what Node reports for
+# `process.platform` here (see stage_system_addon and stage_require_builtin).
+# They are staged after this runs; the keep-list is here so a later reordering
+# cannot cost the app its session store or its ability to boot at all.
+#
+# `node-addon-require-builtin-darwin-arm64` is not optional on this platform:
+# `dsh-app-boot` asks it for Node's internal module loaders while preparing the
+# profile, so without it the engine never reaches a listening port.
 #
 # A name that only mentions a platform is not one of these: `@deepseek-ai/dsh-win32-process`
 # implements Windows support in JavaScript and ships on every platform, so the
@@ -519,7 +523,10 @@ prune_foreign_platform_packages() {
     name=${name%@*}
     name=${name//+/-}
     case "$name" in
-      *node-addon-system-darwin-arm64*) kept=$((kept + 1)); continue ;;
+      *node-addon-system-darwin-arm64* | *node-addon-require-builtin-darwin-arm64*)
+        kept=$((kept + 1))
+        continue
+        ;;
     esac
     if [[ ! $name =~ $triple && ! $name =~ -wasm$ ]]; then
       continue
@@ -1244,6 +1251,36 @@ stage_system_addon() {
   printf 'prepare-engine: %s\n' "$package_dir/bin/system.node"
 }
 
+# ── the profile resolver's native addon ───────────────────────────────────────
+#
+# `dsh-app-boot` calls node-addon-require-builtin while preparing the profile to
+# reach Node's own ESM and CJS loaders. It is not on any tool path: without a
+# binding the process throws before the server listens, which the app can only
+# report as "连不上". The npm package ships desktop macOS binaries; this rebuilds
+# the same sources against the iPhoneOS SDK and puts the result where the package
+# already looks. tooling/ios/build-require-builtin.sh reproduces upstream's gyp
+# conditions, so the backend/product/ABI tags the loader validates still match.
+stage_require_builtin() {
+  say "building node-addon-require-builtin for iOS"
+  command -v xcrun >/dev/null || fail "xcrun is missing — this step needs Xcode"
+
+  # Where pnpm put it: the deployed tree keeps optional packages either beside
+  # the consumer or at the top level, and a symlink is a directory to `find -L`.
+  local package_dir
+  # `|| true`: under pipefail `head` closing the pipe is a failure, and an empty
+  # answer is the diagnostic the next line gives.
+  package_dir=$(find -L "$engine_dir/runtime/harness/node_modules" -maxdepth 5 -type d \
+    -name 'node-addon-require-builtin-darwin-arm64' -print 2>/dev/null | head -n 1 || true)
+  [ -n "$package_dir" ] && [ -f "$package_dir/prebuilds.json" ] || fail \
+    "the deploy left node-addon-require-builtin-darwin-arm64 out; the keep-list in prune_foreign_platform_packages must cover it"
+
+  "$root/tooling/ios/build-require-builtin.sh" iphoneos \
+    "$package_dir/prebuilt/darwin-arm64-napi-v9.node" "$vendor_dir/include/node" \
+    || fail "node-addon-require-builtin did not compile against the iPhoneOS SDK"
+
+  printf 'prepare-engine: %s\n' "$package_dir/prebuilt/darwin-arm64-napi-v9.node"
+}
+
 run_node=1
 run_harness=1
 if [ "$node_only" -eq 1 ]; then
@@ -1264,6 +1301,7 @@ fi
 # without the headers the Node half installs.
 if [ "$run_harness" -eq 1 ] && [ -f "$vendor_dir/include/node/node_api.h" ]; then
   stage_system_addon
+  stage_require_builtin
 elif [ "$run_harness" -eq 1 ]; then
   say "skipping the flock addon: Node's headers are not staged, so there is nothing to compile against"
 fi

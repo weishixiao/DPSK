@@ -10,10 +10,13 @@ import Foundation
 struct EngineRuntime {
     /// Directory holding the packed runtime.
     let root: URL
-    /// Loopback port the packed host serves the Web UI on.
+    /// Loopback port to ask for; 0 lets the system pick one, and the harness
+    /// prints the address it actually bound.
     let port: Int
 
-    static let defaultPort = 8799
+    /// 0 rather than a fixed 8799: a previous run's socket cannot collide, and
+    /// two engine processes (or a Mac-side smoke test) do not fight over a port.
+    static let defaultPort = 0
 
     static func bundled() -> EngineRuntime? {
         guard let root = Bundle.main.url(forResource: "Engine", withExtension: nil) else { return nil }
@@ -25,6 +28,10 @@ struct EngineRuntime {
     }
 
     var entryScript: URL { root.appendingPathComponent("host.mjs") }
+
+    /// The engine log's tail. The failure screens show it, so a boot that never
+    /// reached the port names its own reason instead of only a path.
+    static func logTail(_ lines: Int = 12) -> String { EngineBoot.logTail(lines) }
 
     /// Boot the engine and answer the URL its Web UI serves, or throw why not.
     ///
@@ -109,7 +116,7 @@ actor EngineBoot {
             try prepareDirectories()
             let exit = ExitStatus()
             launch(runtime: runtime, exit: exit)
-            let url = try await waitForPort(runtime.port, exit: exit)
+            let url = try await waitForReady(runtime.port, exit: exit)
             EnginePaths.clearBootMarker()
             state = .ready(url)
             return url
@@ -155,6 +162,13 @@ actor EngineBoot {
         if !EnginePaths.jitEntitled {
             arguments.append("--jitless")
         }
+        // Keep V8 inside an iPhone's memory budget. Without these it sizes the
+        // heap from the device's RAM, and a large session log can reach jetsam
+        // before the app gets a chance to stop the run.
+        arguments.append(contentsOf: [
+            "--max-old-space-size=256",
+            "--max-semi-space-size=4",
+        ])
         arguments.append(runtime.entryScript.path)
         // Everything else — profile, patch, host, port, --no-open — is argv
         // `host.mjs` builds for the harness CLI itself, so one file owns it.
@@ -214,12 +228,15 @@ actor EngineBoot {
         return tail.isEmpty ? "" : "\n" + tail.joined(separator: "\n")
     }
 
-    /// Wait for the loopback port to answer anything at all.
-    private func waitForPort(_ port: Int, exit: ExitStatus) async throws -> URL {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/") else {
-            throw EngineRuntime.EngineError.bootFailed("端口号无效")
-        }
-        let deadline = Date().addingTimeInterval(60)
+    /// Wait for the harness to print the address it bound.
+    ///
+    /// With `--port 0` the CLI picks the port. It prints
+    /// `dsh web: http://127.0.0.1:<port>/?token=<token>` once the listener is
+    /// ready; reading that line is also how the WebView gets the token the
+    /// server requires, without either side guessing.
+    private func waitForReady(_ port: Int, exit: ExitStatus) async throws -> URL {
+        let deadline = Date().addingTimeInterval(90)
+        let logURL = EnginePaths.logs.appendingPathComponent("engine.log")
         // `let`: URLSessionConfiguration is a class, so setting its properties is
         // not a mutation of this binding. With -warnings-as-errors the archive
         // fails on the "never mutated" warning, which is how this line was found.
@@ -227,26 +244,71 @@ actor EngineBoot {
         configuration.timeoutIntervalForRequest = 2
         configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
 
         while Date() < deadline {
             // Node returning is the one failure that is not a timeout: report it
-            // now rather than sitting out the rest of the minute.
+            // now with the reason it printed, rather than sitting out the rest
+            // of the wait.
             if let status = exit.value {
-                session.finishTasksAndInvalidate()
-                throw EngineRuntime.EngineError.bootFailed("Node 退出了（状态 \(status)）")
+                throw EngineRuntime.EngineError.bootFailed(
+                    "Node 退出了（状态 \(status)）。日志尾部：\(EngineRuntime.logTail())")
             }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 2
-            if let (_, response) = try? await session.data(for: request),
-               let http = response as? HTTPURLResponse,
-               http.statusCode < 500 {
-                session.finishTasksAndInvalidate()
-                return url
+            if let url = EngineBoot.readyURL(in: logURL) {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 2
+                if let (_, response) = try? await session.data(for: request),
+                   let http = response as? HTTPURLResponse,
+                   http.statusCode < 500 {
+                    return url
+                }
+            }
+            // A caller that pinned a port is answered even if the ready line was
+            // unreadable; the app itself always asks for 0.
+            if port != 0, let url = URL(string: "http://127.0.0.1:\(port)/") {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 2
+                if let (_, response) = try? await session.data(for: request),
+                   let http = response as? HTTPURLResponse,
+                   http.statusCode < 500 {
+                    return url
+                }
             }
             try await Task.sleep(nanoseconds: 300_000_000)
         }
-        session.finishTasksAndInvalidate()
-        throw EngineRuntime.EngineError.bootFailed("等了 60 秒，127.0.0.1:\(port) 没有应答。日志尾部：\(Self.logTail())")
+        throw EngineRuntime.EngineError.bootFailed(
+            "等了 90 秒，引擎没有打印可用的地址。日志尾部：\(EngineRuntime.logTail())")
+    }
+
+    /// The last `dsh web: <url>` line in the log, if there is one.
+    ///
+    /// The line arrives through `host.mjs`'s log mirror, so it may carry that
+    /// file's prefix; only the address after the marker is read.
+    static func readyURL(in url: URL) -> URL? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        // Only lines this launch wrote count. The log outlives relaunches, and
+        // an old ready line would send the WebView to a port nobody listens on.
+        let scope: Substring
+        if let boot = text.range(of: "boot: calling node::Start", options: .backwards) {
+            scope = text[boot.upperBound...]
+        } else {
+            scope = text[...]
+        }
+        var found: URL?
+        for line in scope.split(separator: "\n") {
+            let textLine = String(line)
+            guard let marker = textLine.range(of: "dsh web: http://") else { continue }
+            var rest = String(textLine[marker.upperBound...])
+            // Drop a terminal escape sequence if anything coloured the output.
+            if let escape = rest.range(of: "\u{1B}") {
+                rest = String(rest[..<escape.lowerBound])
+            }
+            let address = rest.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map { String($0) } ?? ""
+            if let parsed = URL(string: address), parsed.host == "127.0.0.1", parsed.port != nil {
+                found = parsed
+            }
+        }
+        return found
     }
 }
 
