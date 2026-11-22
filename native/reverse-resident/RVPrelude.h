@@ -89,10 +89,10 @@ extern kern_return_t mach_vm_write(vm_map_t target_task,
 #define RV_MAX_LOG_DETAIL (400u)
 
 /** Socket the resident listens on, inside the jailbreak-writable data container. */
-FOUNDATION_EXPORT NSString *const RVSocketPath;
-
-/** Directory the socket lives in; created if absent. */
-FOUNDATION_EXPORT NSString *const RVStateDirectory;
+/** Absolute path of the listening socket, resolved once at first use. */
+FOUNDATION_EXPORT NSString *RVSocketPath(void);
+/** Directory holding the socket and the resident's state files. */
+FOUNDATION_EXPORT NSString *RVStateDirectory(void);
 
 /** Stable failure classes on the wire; the strings are the protocol's, not ours. */
 extern NSString *const RVCodeBadRequest;
