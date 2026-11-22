@@ -23,7 +23,9 @@ THEOS=/opt/theos make package            # rootless / rootful
 THEOS=/opt/theos THEOS_PACKAGE_SCHEME=roothide make package
 ```
 
-用你的包管理器安装产出的 `.deb`，然后注销：监听由 tweak 的构造函数启动，首次启动会以 `0700` 创建 `/var/mobile/Library/DSHReverse`。
+用你的包管理器安装产出的 `.deb`，然后注销：监听由 tweak 的构造函数启动，首次启动会以 `0755` 创建状态目录 `/var/mobile/Library/DSHReverse`（套接字 `0666`），因为 harness 以 `mobile` 连接，目录不可进入时权限再宽也没用。
+
+RootHide 下，该路径经 `jbroot()` 翻译到 bootstrap 根内的真实目录——App 的虚拟根与本进程看到的不是同一个位置，harness 侧要用解析后的路径（部署页的 RootHide 一节）。`
 
 要确认它起来了，看它自己的日志行 `rv: resident listening on …`，以及 harness 的 `reverse_status`。[部署页](../../docs/reverse/readme.zh.md)写明套接字权限、能力开关与模型路由。
 

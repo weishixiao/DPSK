@@ -57,10 +57,31 @@ export interface Config {
   connectTimeoutMs: number
 }
 
+/** Where a rootful or rootless resident listens; a composition may name another. */
+const DEFAULT_SOCKET_PATH = '/var/mobile/Library/DSHReverse/rvd.sock'
+
+/**
+ * The socket this process should dial.
+ *
+ * RootHide gives every app a virtual root, so `/var/mobile/Library/DSHReverse`
+ * names a different directory here than it does in SpringBoard, where the
+ * resident listens -- the dial would fail with the resident running.
+ * `DSH_REVERSE_SOCKET` carries the resident's resolved path to the app. A
+ * composition that names a path explicitly is left alone: it is the deployment's
+ * own answer, and overriding it silently would be worse than a failed dial.
+ * @param configured - the path the composition supplied.
+ * @returns the path to use for this process.
+ */
+function resolveSocketPath(configured: string): string {
+  const override = process.env['DSH_REVERSE_SOCKET']
+  if (override === undefined || override.length === 0) return configured
+  return configured === DEFAULT_SOCKET_PATH ? override : configured
+}
+
 /** Schema of the provider configuration. */
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
-  socketPath: z.string().default('/var/mobile/Library/DSHReverse/rvd.sock'),
+  socketPath: z.string().default(DEFAULT_SOCKET_PATH),
   timeoutMs: z.number().default(20_000),
   connectTimeoutMs: z.number().default(2_000),
 })
@@ -99,8 +120,12 @@ export class LocalSocketReverseBridge extends ReverseBridge {
    */
   constructor(ctx: Context, readonly config: Config) {
     super(ctx)
+    this.socketPath = resolveSocketPath(config.socketPath)
     ctx.effect(() => () => { this.dispose() })
   }
+
+  /** The path every dial and every report uses. */
+  private readonly socketPath: string
 
   get state(): ReverseState {
     if (!this.config.enabled) return 'disabled'
@@ -126,7 +151,7 @@ export class LocalSocketReverseBridge extends ReverseBridge {
     }
     return {
       state: this.state,
-      socketPath: this.config.socketPath,
+      socketPath: this.socketPath,
       ...this.resident === undefined ? {} : { resident: this.resident },
       ...this.lastError === undefined ? {} : { lastError: this.lastError },
       pending: this.pending.size,
@@ -228,7 +253,7 @@ export class LocalSocketReverseBridge extends ReverseBridge {
     if (socket === undefined) {
       throw new ReverseBridgeError(
         'not-connected',
-        this.lastError ?? `no resident answered on ${this.config.socketPath}`,
+        this.lastError ?? `no resident answered on ${this.socketPath}`,
       )
     }
     return socket
@@ -239,7 +264,7 @@ export class LocalSocketReverseBridge extends ReverseBridge {
    * @param signal - withdraws the dial.
    */
   private async open(signal?: AbortSignal): Promise<void> {
-    const path = this.config.socketPath
+    const path = this.socketPath
     const socket = createConnection({ path })
     try {
       await new Promise<void>((resolve, reject) => {

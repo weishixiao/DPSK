@@ -152,6 +152,34 @@ make install            # or hand the deb to the user's package manager
 2. On SpringBoard launch the resident creates `/var/mobile/Library/DSHReverse/rvd.sock` (0666).
 3. Confirm in the log: `log stream --predicate 'eventMessage CONTAINS "rv:"'` shows `rv: resident listening on ...`.
 
+### RootHide (roothide scheme)
+
+RootHide installs the jailbreak into a randomly named bootstrap root (`jbroot`) and gives every app a virtual root. The same `/var/mobile/Library/DSHReverse` therefore names **two different directories** in SpringBoard and in the app: the resident listens and the app still reports `no resident answered`.
+
+Each end handles it:
+
+- **The resident** translates the path with RootHide's own `jbroot()` (`<roothide.h>`, shipped with Theos and a no-op stub on rootful/rootless), and gives the directory `0755` and the socket `0666` -- the harness connects as `mobile`, and a directory it cannot enter defeats the socket's own mode.
+- **The harness** keeps `/var/mobile/Library/DSHReverse/rvd.sock` as its default; on RootHide the deployment passes the resident's resolved path through `DSH_REVERSE_SOCKET`. A `socketPath` written into the profile still wins: it is the deployment's own answer.
+
+Build:
+
+```sh
+export THEOS=$HOME/theos
+cd native/reverse-resident
+THEOS_PACKAGE_SCHEME=roothide make package
+```
+
+Read the app-side path once the deb is installed and SpringBoard has restarted:
+
+```sh
+# the resident logs the real path it resolved
+log stream --predicate 'eventMessage CONTAINS "rv: resident listening"' --style compact
+# hand it to the app
+export DSH_REVERSE_SOCKET="<the path after rv: resident listening on>"
+```
+
+When diagnosing, look for `rv: resident listening on <path>` first. That line present while the app still reports `no resident answered` means the two ends disagree about the path.
+
 <a id="assembly-and-switches"></a>
 ## Assembly and switches
 
