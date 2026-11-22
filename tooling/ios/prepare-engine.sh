@@ -287,10 +287,19 @@ harness_missing_peers() {
 # The packages in the tree that are real directories instead of links into the
 # store: the ones this script copied. They are the only ones whose dependencies
 # have to be resolved from `node_modules` itself.
-harness_copied_packages() {
+# Every first-party package in the tree, copied or linked into the store.
+#
+# This used to take only real directories, on the theory that a link resolves its
+# dependencies the way pnpm laid them out. True for the link, and irrelevant to
+# what gets mounted: the package a link points at is still a package whose own
+# `peerDependencies` have to be present at the tree root, because the copier
+# never made it a sibling. `dsh-bash-sandbox` is exactly that -- a store package
+# that peers on `@deepseek-ai/dsh-bash-local` -- and skipping it left five peers
+# unstaged while this function reported no gaps.
+harness_first_party_packages() {
   local harness="$1" dir
-  for dir in "$harness"/node_modules/* "$harness"/node_modules/@*/*; do
-    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+  for dir in "$harness"/node_modules/* "$harness"/node_modules/@*/* \
+             "$harness"/node_modules/.pnpm/node_modules/* "$harness"/node_modules/.pnpm/node_modules/@*/*; do
     case "${dir##*/}" in
       .pnpm|.bin|node_modules) continue ;;
     esac
@@ -334,7 +343,7 @@ harness_missing_copied_dependencies() {
       [ -n "$dep" ] || continue
       [ -e "$harness/node_modules/$dep" ] || printf '%s\n' "$dep"
     done < <(manifest_dependencies "$manifest")
-  done < <(harness_copied_packages "$harness")
+  done < <(harness_first_party_packages "$harness")
 }
 
 # Where this checkout keeps a package. Two answers, in this order.
@@ -534,45 +543,6 @@ harness_unresolvable_imports() {
     '
 }
 
-
-# Temporary diagnostic for the staging investigation: for every first-party package
-# in the tree, report the specifiers its own lib imports that do not resolve from
-# it, whether the tree has the package at all, and which file it came from.
-harness_peer_report() {
-  local harness="$1"
-  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*" \
-    --include='*.js' --include='*.mjs' \
-    "$harness/lib" \
-    "$harness"/node_modules/@deepseek-ai/*/lib \
-    "$harness"/node_modules/.pnpm/node_modules/@deepseek-ai/*/lib 2>/dev/null \
-    | node -e '
-      const fs = require("fs");
-      const { createRequire } = require("module");
-      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)$/;
-      const seen = new Set();
-      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
-        const found = line.match(LINE);
-        if (found === null) continue;
-        const file = found[1];
-        const name = found[2];
-        if (seen.has(file + "\\0" + name)) continue;
-        seen.add(file + "\\0" + name);
-        let real = file;
-        try {
-          real = fs.realpathSync(file);
-        } catch {
-          // keep the given path
-        }
-        try {
-          createRequire(real).resolve(name);
-        } catch (error) {
-          const pkg = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name.split("/")[0];
-          console.log("UNRESOLVED " + name + "  from " + real + "  code=" + (error.code ?? "?") + "  pkgdir=" + pkg);
-        }
-      }
-    '
-}
-
 stage_harness_peers() {
   local harness="$1" passes=0 gaps name
   while :; do
@@ -604,10 +574,6 @@ EOF
   # store link can point at a partial entry. `harness_unresolvable_imports` below
   # resolves each import from its own file, which is what turns that into a line in
   # the build log instead of a plugin that fails to mount on the device.
-  # Temporary diagnostic: what do the import sites actually see?
-  say "peer resolution report:"
-  harness_peer_report "$harness" >&2 || true
-
   local unresolvable
   unresolvable=$(harness_unresolvable_imports "$harness")
   if [ -n "$unresolvable" ]; then
