@@ -9,8 +9,49 @@
 
 #import "RVPrelude.h"
 
-NSString *const RVSocketPath = @"/var/mobile/Library/DSHReverse/rvd.sock";
-NSString *const RVStateDirectory = @"/var/mobile/Library/DSHReverse";
+// RootHide's path API, shipped with Theos. On a rootful or rootless toolchain
+// the header compiles to identical stubs, so one call site serves every scheme.
+#include <roothide.h>
+
+/*
+ * Where the resident listens.
+ *
+ * A plain (rootful or rootless) jailbreak has one filesystem for everyone, so a
+ * fixed path under /var/mobile names the same file in SpringBoard and in the app.
+ * RootHide does not: it installs to a randomly named bootstrap root ("jbroot")
+ * and gives each app a virtual root, so /var/mobile means different directories
+ * in the two processes. A fixed path would then have the listener and the client
+ * open two directories that merely spell the same name -- and the bridge would
+ * report "no resident answered" while the resident was listening the whole time.
+ *
+ * RootHide's answer is its own API (roothide.h, shipped with Theos): `jbroot()`
+ * maps a jbroot-relative path to the real one, and on a rootful/rootless
+ * toolchain the header compiles to identical stubs. So the path is written once,
+ * relative to the jailbreak root, and translated here.
+ *
+ * DSH_REVERSE_STATE_DIR overrides all of it, for a layout neither default
+ * describes. The bridge on the harness side takes the same path through its
+ * `socketPath` config; the deploy notes give the pair.
+ */
+static NSString *RVResolveStateDirectory(void) {
+  NSDictionary *environment = [[NSProcessInfo processInfo] environment];
+  NSString *override = environment[@"DSH_REVERSE_STATE_DIR"];
+  if (override.length > 0) return override;
+  // Shared by SpringBoard and every app's virtualised view once translated: the
+  // app ends up at the same real directory the resident is listening in.
+  return jbroot(@"/var/mobile/Library/DSHReverse");
+}
+
+NSString *RVStateDirectory(void) {
+  static NSString *directory = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ directory = RVResolveStateDirectory(); });
+  return directory;
+}
+
+NSString *RVSocketPath(void) {
+  return [RVStateDirectory() stringByAppendingPathComponent:@"rvd.sock"];
+}
 
 NSString *const RVCodeBadRequest = @"bad-request";
 NSString *const RVCodeInvalidArgs = @"invalid-args";
@@ -449,9 +490,15 @@ static NSData *RVFrame(NSString *identifier, id result, RVError *error, NSDate *
   @synchronized (self) {
     if (_running) return;
     NSFileManager *files = [NSFileManager defaultManager];
-    [files createDirectoryAtPath:RVStateDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    [files createDirectoryAtPath:RVStateDirectory() withIntermediateDirectories:YES attributes:nil error:nil];
+    // The harness runs as `mobile` inside the app's sandbox; this directory is
+    // created by SpringBoard. Without traverse permission the harness cannot reach
+    // the socket at all, whatever mode the socket itself carries -- and under
+    // RootHide the app's virtual root makes that the difference between a working
+    // dial and an EACCES that looks like "no resident".
+    chmod(RVStateDirectory().UTF8String, 0755);
     // A socket left by a previous SpringBoard instance refuses bind.
-    [files removeItemAtPath:RVSocketPath error:nil];
+    [files removeItemAtPath:RVSocketPath() error:nil];
 
     int listener = socket(AF_UNIX, SOCK_STREAM, 0);
     if (listener < 0) {
@@ -462,16 +509,16 @@ static NSData *RVFrame(NSString *identifier, id result, RVError *error, NSDate *
     struct sockaddr_un address;
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
-    strncpy(address.sun_path, RVSocketPath.UTF8String, sizeof(address.sun_path) - 1);
+    strncpy(address.sun_path, RVSocketPath().UTF8String, sizeof(address.sun_path) - 1);
 
     if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0) {
-      os_log_error(OS_LOG_DEFAULT, "rv: bind(%{public}s) failed: %{errno}d", RVSocketPath.UTF8String, errno);
+      os_log_error(OS_LOG_DEFAULT, "rv: bind(%{public}s) failed: %{errno}d", RVSocketPath().UTF8String, errno);
       close(listener);
       return;
     }
     // 0666 so the harness, running as mobile in the same container's sandbox,
     // may dial it; the socket carries no other credential.
-    chmod(RVSocketPath.UTF8String, 0666);
+    chmod(RVSocketPath().UTF8String, 0666);
     if (listen(listener, 8) != 0) {
       os_log_error(OS_LOG_DEFAULT, "rv: listen failed: %{errno}d", errno);
       close(listener);
@@ -480,7 +527,7 @@ static NSData *RVFrame(NSString *identifier, id result, RVError *error, NSDate *
 
     _listener = listener;
     _running = YES;
-    os_log(OS_LOG_DEFAULT, "rv: resident listening on %{public}s", RVSocketPath.UTF8String);
+    os_log(OS_LOG_DEFAULT, "rv: resident listening on %{public}s", RVSocketPath().UTF8String);
 
     pthread_t thread;
     pthread_create(&thread, NULL, RVAceptLoop, (__bridge void *)self);
