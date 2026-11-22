@@ -152,6 +152,34 @@ make install            # 或把 deb 交给用户的包管理器
 2. 常驻端在 SpringBoard 启动时创建 `/var/mobile/Library/DSHReverse/rvd.sock`（0666）。
 3. 用日志确认：`log stream --predicate 'eventMessage CONTAINS "rv:"'`，应看到 `rv: resident listening on ...`。
 
+### RootHide（roothide scheme）
+
+RootHide 把越狱装进一个随机命名的 bootstrap 根（`jbroot`），并给每个 App 一个虚拟根。于是同一个 `/var/mobile/Library/DSHReverse` 在 SpringBoard 里和在 App 里指向**两个不同目录**：常驻端在监听，App 却连不上，报的是 `no resident answered`。
+
+两端各自处理：
+
+- **常驻端**用 RootHide 自带的 `jbroot()`（`<roothide.h>`，Theos 已带；rootful/rootless 下是同名空实现）把路径翻译成真实路径，并给目录 `0755`、套接字 `0666`，否则 App 以 `mobile` 连 `0700` 目录会得到 `EACCES`。
+- **harness 侧**默认仍是 `/var/mobile/Library/DSHReverse/rvd.sock`；RootHide 下由部署脚本把常驻端解析出的真实路径经 `DSH_REVERSE_SOCKET` 交给 App。在 profile 里显式写了 `socketPath` 时以 profile 为准，环境变量不覆盖它。
+
+编译：
+
+```sh
+export THEOS=$HOME/theos
+cd native/reverse-resident
+THEOS_PACKAGE_SCHEME=roothide make package
+```
+
+取 App 侧要用的路径（装好 deb、respring 之后）：
+
+```sh
+# 常驻端日志会打印解析后的真实路径
+log stream --predicate 'eventMessage CONTAINS "rv: resident listening"' --style compact
+# 把打印出来的路径交给 App
+export DSH_REVERSE_SOCKET="<日志里 rv: resident listening on 之后的路径>"
+```
+
+排障时先看常驻端是否真的在监听：`rv: resident listening on <path>`。有这一行而 App 仍报 `no resident answered`，就是两端的路径不一致，按上面的日志取路径。
+
 <a id="装配与开关"></a>
 ## 装配与开关
 
