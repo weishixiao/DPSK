@@ -67,7 +67,11 @@ jobs:
           path: |
             app/ios/Vendor
             app/ios/Engine/runtime
-          key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
+          # The staged engine is the whole composition, not just the script:
+          # a package or an overlay can change what the runtime must contain.
+          # Keying on the commit rebuilds the harness per push; the two-hour
+          # Node tree cache is untouched, and a stale half can no longer ship.
+          key: ios-engine-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('tooling/ios/prepare-engine.sh') }}
       # The unpacked tree and its objects are the expensive part: a cold build
       # compiles V8 twice and runs about two hours. Keeping them means a retry
       # after a failure in a later step resumes instead of starting over.
@@ -107,6 +111,8 @@ jobs:
           # inside the build tree, so it is cached and restored with it.
           command -v ccache >/dev/null || brew install ccache
           tooling/ios/prepare-engine.sh 2>&1 | tee "$RUNNER_TEMP/engine.log"
+      - name: Check the runtime matches the iOS overlays
+        run: python3 tooling/ios/check-runtime.py --engine app/ios/Engine
       # Saved even when the job fails: that is the case this cache exists for.
       - name: Keep the build tree for the next attempt
         if: always() && steps.staged.outputs.cache-hit != 'true'
@@ -149,6 +155,30 @@ jobs:
           grep -a -E 'FATAL ERROR|out of memory|error TS[0-9]+' "$RUNNER_TEMP/engine.log" \
             | head -n 5 | cut -c1-400 | sed 's/^/::error::engine log: /' || true
 
+  boot:
+    name: engine boot (macOS host)
+    needs: engine
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Restore the staged engine
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/ios/Vendor
+            app/ios/Engine/runtime
+          key: ios-engine-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('tooling/ios/prepare-engine.sh') }}
+          fail-on-cache-miss: true
+      # The JavaScript half of the engine: profile, patches, server. The native
+      # half needs a device or simulator, but this is what catches a patch row
+      # the packed runtime cannot satisfy.
+      - name: Boot the packed harness
+        run: tooling/ios/engine-smoke.sh
+
   ipa:
     name: unsigned ipa
     needs: engine
@@ -164,8 +194,14 @@ jobs:
           path: |
             app/ios/Vendor
             app/ios/Engine/runtime
-          key: ios-engine-${{ runner.os }}-${{ hashFiles('tooling/ios/prepare-engine.sh', 'pnpm-lock.yaml') }}
+          # The staged engine is the whole composition, not just the script:
+          # a package or an overlay can change what the runtime must contain.
+          # Keying on the commit rebuilds the harness per push; the two-hour
+          # Node tree cache is untouched, and a stale half can no longer ship.
+          key: ios-engine-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('tooling/ios/prepare-engine.sh') }}
           fail-on-cache-miss: true
+      - name: Check the runtime matches the iOS overlays
+        run: python3 tooling/ios/check-runtime.py --engine app/ios/Engine
       - name: Build unsigned ipa
         run: tooling/ios/build.sh iphoneos "$RUNNER_TEMP/ipa"
       - name: Upload the ipa

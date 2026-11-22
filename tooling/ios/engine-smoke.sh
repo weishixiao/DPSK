@@ -1,0 +1,101 @@
+#!/bin/sh
+# Boot the packed harness on this Mac and wait for the address it prints.
+#
+# This covers the part of the engine that lives in JavaScript: the profile, every
+# patch row and the HTTP server. It does not exercise Node-for-iOS, libnode or
+# the Swift shell -- those need a device or a simulator -- but it does catch the
+# class of failure that shipped a broken package: a patch row the runtime no
+# longer satisfies, which makes `boot()` throw and the server never listen.
+#
+#   tooling/ios/engine-smoke.sh
+#
+# Needs app/ios/Engine prepared by prepare-engine.sh and Node 22+ on PATH.
+set -eu
+
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+ENGINE=${DPSK_ENGINE_DIR:-$ROOT/app/ios/Engine}
+[ -f "$ENGINE/.ready" ] || {
+  echo "engine-smoke: run tooling/ios/prepare-engine.sh first" >&2
+  exit 1
+}
+command -v node >/dev/null || {
+  echo "engine-smoke: node is not on PATH (CI uses actions/setup-node 24)" >&2
+  exit 1
+}
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/dpsk-engine.XXXXXX")
+PID=
+cleanup() {
+  if [ -n "$PID" ]; then
+    kill "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$WORK/dsh" "$WORK/workspace"
+export DPSK_ENGINE_ROOT="$ENGINE"
+export DSH_HOME="$WORK/dsh"
+export DPSK_WORKSPACE="$WORK/workspace"
+export DPSK_LOG="$WORK/engine.log"
+export DPSK_PORT=0
+export HOME="$WORK"
+export TMPDIR="$WORK"
+
+# The harness imports the flock addon lazily, so a boot alone does not need it.
+# When the host is the same architecture as the packed one, rebuild it here so a
+# session write during the smoke does not fail for a platform reason; a failure
+# is a note, not a verdict.
+ADDON_ROOT="$ENGINE/runtime/harness/node_modules/@deepseek-ai"
+if [ "$(uname -s)" = Darwin ] && [ -f "$ROOT/native/system/packages/entry/src/flock.c" ] &&
+   [ -d "$ENGINE/include/node" ]; then
+  ARCH=$(node -p 'process.arch' 2>/dev/null || echo arm64)
+  PKG="$ADDON_ROOT/node-addon-system-darwin-$ARCH"
+  [ -d "$PKG" ] || cp -R "$ADDON_ROOT/node-addon-system-darwin-arm64" "$PKG" 2>/dev/null || true
+  if [ -d "$PKG/bin" ]; then
+    clang -bundle -undefined dynamic_lookup -DNAPI_VERSION=8 -O2 \
+      -I "$ENGINE/include/node" -o "$PKG/bin/system.node" \
+      "$ROOT/native/system/packages/entry/src/flock.c" ||
+      echo "engine-smoke: could not build the host flock addon (continuing)" >&2
+    # macOS refuses an unsigned bundle in a hardened host; the ipa's copy is
+    # signed by the re-sign tool, this one only has to load here.
+    codesign --force --sign - "$PKG/bin/system.node" >/dev/null 2>&1 || true
+  fi
+fi
+
+node "$ENGINE/host.mjs" >"$WORK/stdout.log" 2>&1 &
+PID=$!
+
+URL=
+i=0
+while [ "$i" -lt 240 ]; do
+  i=$((i + 1))
+  if [ -f "$DPSK_LOG" ]; then
+    grep -q 'harness failed to start' "$DPSK_LOG" 2>/dev/null && break
+    URL=$(grep -Eo 'dsh web: http://127\.0\.0\.1:[0-9]+/\?token=[A-Za-z0-9_-]+' "$DPSK_LOG" 2>/dev/null |
+      tail -1 | sed 's/^dsh web: //') || true
+    [ -n "$URL" ] && break
+  fi
+  kill -0 "$PID" 2>/dev/null || break
+  sleep 0.5
+done
+
+fail() {
+  echo "engine-smoke: $1" >&2
+  echo '--- engine.log (tail) ---' >&2
+  [ -f "$DPSK_LOG" ] && tail -n 80 "$DPSK_LOG" >&2 || true
+  echo '--- stdout/stderr (tail) ---' >&2
+  [ -f "$WORK/stdout.log" ] && tail -n 40 "$WORK/stdout.log" >&2 || true
+  exit 1
+}
+
+[ -n "$URL" ] || fail "the harness never printed a ready address"
+
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL" || true)
+case "$CODE" in
+  2?? | 3?? | 4??) ;;
+  *) fail "GET $URL answered $CODE" ;;
+esac
+
+echo "engine-smoke: ready at $URL (HTTP $CODE)"

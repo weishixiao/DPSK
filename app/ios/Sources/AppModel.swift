@@ -48,9 +48,14 @@ final class AppModel: ObservableObject {
             phase = .ready(url)
         case .engine:
             if crashedDuringBoot && !bootOnDemand {
+                // The marker is left by any boot that never reached the port,
+                // including a clean Node exit caused by a bad plugin row. It is
+                // not proof of a crash, so the screen says what the log says.
+                let tail = EngineRuntime.logTail(10)
                 phase = .failed(
-                    "上次启动本机引擎时 App 崩溃了，所以这次没有自动重试。\n"
-                        + "日志：\(engineLogPath)\n"
+                    "上次本机引擎没有起到服务。\n"
+                        + (tail.isEmpty ? "日志是空的：Node 很可能在写出任何内容前就退出了。" : tail)
+                        + "\n日志：\(engineLogPath)\n"
                         + "点「重试」再试一次，或在「设置」里改用远程主机。"
                 )
                 return

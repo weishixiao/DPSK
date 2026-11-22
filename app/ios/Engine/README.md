@@ -1,8 +1,9 @@
 # 本机引擎
 
 App 里跑的 harness：Node 链接进 `DPSK.app`，`host.mjs` 用 CLI 的受支持启动路径
-（`runCli()`）起 `web` profile，把界面绑在 `127.0.0.1:8799`，`WKWebView` 打开它。
-没有子进程，没有 shell，也没有远程主机。
+（`runCli()`）起 `web` profile，绑在 `127.0.0.1` 的系统分配端口（`--port 0`），
+再把 CLI 打印的、带启动 token 的地址交给 `WKWebView`。没有子进程，没有 shell，
+也没有远程主机。
 
 ```
 Engine/
@@ -52,7 +53,10 @@ Node 自带的依赖打重复符号，也不便替换。代价是 dylib 必须�
    是容器根，从它 `..` 会落到沙盒外，`mkdir` 直接 `EPERM`。
 3. 起一个 8 MB 栈的线程跑 `DPSKNodeStart(argv)`（`Sources/NodeBridge.mm` 里的
    `node::Start`）。Node 只能在进程里启动一次，所以启动失败就直接说清原因，不重试。
-4. 轮询 `http://127.0.0.1:8799/`，通了就把地址交给 WebView，60 秒没通报超时。
+4. 从 `engine.log` 里读 CLI 打印的
+   `dsh web: http://127.0.0.1:<port>/?token=…`，用这个地址打开 WebView；90 秒
+   没读到就报超时，并把日志尾部一起显示。端口不再写死：一次没退干净的旧监听不会
+   让下一次启动撞车，Mac 上的冒烟测试也能和 App 同时跑。
 
 **JIT**：V8 只有在签名带 `com.apple.security.cs.allow-jit` 时才 JIT。
 `DPSK.entitlements` 声明了它，但自签（免费 Apple ID）会丢掉这个权限，所以
@@ -62,7 +66,7 @@ Info.plist 的 `DPSKEngineJIT` 默认 `false`，启动时加 `--jitless`——�
 ## `host.mjs` 做什么
 
 - `ios.patch.yml` 经 `--patch` 传给 CLI，`--profile web`，`--host 127.0.0.1`，
-  `--no-open`：一个来源，Swi‌ft 只给端口。
+  `--port 0`，`--no-open`：一个来源，Swift 只说「随便挑个端口」。
 - `uncaughtException`／`unhandledRejection` 写日志后继续跑：引擎和界面同一个进程，
   崩了会一起没，所以宁可留着残局也不默认退出。
 - `console` 的输出镜像进 `Library/Logs/engine.log`（iOS 上 stdout 无处可去）。
@@ -219,9 +223,21 @@ Node 版本或暂存布局要变时才改它。patches 不进缓存键——那�
    没验的部分：真机 IPA 的实际大小、删完之后 harness 是否照常启动——都要等下一次
    Mac/CI 构建。
 
+## 每次提交都会检查什么
+
+- `tooling/ios/check-runtime.py --engine app/ios/Engine`：读 `runtime.zip` 的
+  manifest（或部署目录的 `node_modules`），按 `ios.patch.yml` /
+  `ios-preset.patch.yml` 里每个 `name:` 校验包和子路径出口。补丁行指向运行时里
+  不存在的包时，构建在这一步失败，而不是在手机上变成「App 崩溃了」。
+- `tooling/ios/engine-smoke.sh`：在 macOS 上真启动 `host.mjs`，等到 CLI 打印
+  `dsh web: http://127.0.0.1:<port>/?token=…`，再用这个地址 GET 一次。覆盖
+  profile、补丁行和 HTTP 服务；Node-for-iOS、libnode 与 Swift 外壳仍要在真机或
+  模拟器上验证。
+
 ## 排查
 
-引擎起不来时先看 App 容器里的 `Library/Logs/engine.log`（设置页显示路径）：
+引擎起不来时先看 App 容器里的 `Documents/Logs/engine.log`（`UIFileSharingEnabled`
+打开后能在「文件」App 的 DPSK 里直接取，设置页也显示路径）：
 
 - `Cannot find module .../lib/bin.js`：`prepare-engine.sh` 的 harness 步骤没跑完。
 - `ERR_MODULE_NOT_FOUND` 指向某个 `@deepseek-ai/dsh-*`：部署树缺首方包，
