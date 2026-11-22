@@ -54,16 +54,34 @@ fi
 
 xcodegen generate --spec "$spec"
 
-# Every build carries its own version: the patch number is the number of commits
-# on the branch and the build number is the same count, so a build names the tree
-# it came from and two builds of one commit are the same build. The major/minor
-# line stays in project.yml — this reads it rather than keeping a second copy —
-# and a tree without git (a source tarball) falls back to build 1.
-version_line=$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\)\..*/\1/p' \
+# Every build carries its own version, and the minor number advances on every
+# build: a build has to be identifiable from the installed app alone, and two
+# builds must never answer to the same version. The patch number stays the commit
+# count, which names the tree the build came from; the minor is what the last
+# build used plus one, kept outside the tree so a rebuild in the same checkout
+# still advances it.
+#
+# The counter lives at $DSH_IOS_BUILD_COUNTER, defaulting to
+# .dpsk-ios/build-counter beside the build tree. A CI run that wants the count to
+# keep moving across runs exports it from a cache; without one it starts at 1.
+major=$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([0-9][0-9]*\)\.[0-9][0-9]*\..*/\1/p' \
   project.yml | head -1)
-build_number=$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)
-marketing_version="${version_line:-0.1}.$build_number"
-echo "build.sh: version $marketing_version ($build_number)"
+major="${major:-0}"
+patch_number=$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)
+
+counter_file="${DSH_IOS_BUILD_COUNTER:-$work/build-counter}"
+mkdir -p "$(dirname "$counter_file")"
+previous=0
+if [ -f "$counter_file" ]; then
+  previous=$(tr -cd '0-9' <"$counter_file")
+  [ -n "$previous" ] || previous=0
+fi
+minor=$((previous + 1))
+printf '%s\n' "$minor" >"$counter_file"
+
+marketing_version="$major.$minor.$patch_number"
+build_number="$minor"
+echo "build.sh: version $marketing_version (build $build_number, previous minor $previous)"
 
 if [ "$sdk" = iphonesimulator ]; then
   destination="generic/platform=iOS Simulator"

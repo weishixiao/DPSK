@@ -1,7 +1,13 @@
 import SwiftUI
 
-/// What the window is showing and why.
+/// What the page area is showing and why.
+///
+/// This describes the *connection*, not the window. The window is always the app:
+/// a boot that does not come up is a notice over the home screen, never a screen
+/// that replaces it. Replacing the whole body with a failure is what made a missing
+/// engine look like an app that would not open.
 enum Phase: Equatable {
+    /// Nothing attempted yet, or the user asked to stay disconnected.
     case idle
     case connecting
     case ready(URL)
@@ -15,9 +21,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var settings: AppSettings
     /// Bumped when the user asks for the page again; the WebView reloads on it.
     @Published private(set) var reloadToken = 0
+    /// The last failure, kept apart from `phase` so the notice can be dismissed
+    /// without forgetting what went wrong; `nil` means nothing to show.
+    @Published var connectionNotice: String?
 
     private let store = SettingsStore()
     private let runtime = EngineRuntime.bundled()
+    /// The connect attempt in flight, so a second tap does not start a second boot.
+    private var connecting: Task<Void, Never>?
 
     /// A boot attempt that never reached a serving port, left over from a previous
     /// launch: Node took the process down with it. Booting again on launch would
@@ -37,57 +48,101 @@ final class AppModel: ObservableObject {
         settings = store.load()
     }
 
-    func start() {
-        if case .connecting = phase { return }
+    // MARK: - Launch
+
+    /// What the app does when it becomes visible.
+    ///
+    /// It does not connect. Opening the app is not a request to reach a host, and a
+    /// host that is slow or absent must not hold the window: the home screen is
+    /// shown, the saved settings are read, and the connection is offered rather than
+    /// required. `connectInBackground()` is what the home screen calls once it is up.
+    func started() {
+        // A crash marker from a previous launch is reported on the home screen, not
+        // by refusing to start.
+        if crashedDuringBoot && !bootOnDemand && settings.mode == .engine {
+            connectionNotice = "上次启动本机引擎时 App 崩溃了，所以这次没有自动重试。\n日志：\(engineLogPath)"
+        }
+    }
+
+    /// Offer the saved configuration once the home screen is up.
+    ///
+    /// This is the launch attempt, so it honours the crash marker instead of
+    /// clearing it: an engine that took the app down last time is not booted again
+    /// without being asked. A boot waits on a loopback port, so it runs detached and
+    /// the home screen stays usable throughout.
+    func connectInBackground() {
+        guard connecting == nil else { return }
         switch settings.mode {
         case .remote:
             guard let url = settings.resolvedRemoteURL else {
-                phase = .failed("还没有填主机地址。点右上角设置，填入 dsh web 的地址，例如 192.168.1.20:8787。")
+                phase = .idle
+                connectionNotice = "还没有填主机地址。打开设置填入 `dsh web` 的地址，例如 192.168.1.20:8787。"
                 return
             }
             phase = .ready(url)
         case .engine:
-            if crashedDuringBoot && !bootOnDemand {
-                // The marker is left by any boot that never reached the port,
-                // including a clean Node exit caused by a bad plugin row. It is
-                // not proof of a crash, so the screen says what the log says.
-                let tail = EngineRuntime.logTail(10)
-                phase = .failed(
-                    "上次本机引擎没有起到服务。\n"
-                        + (tail.isEmpty ? "日志是空的：Node 很可能在写出任何内容前就退出了。" : tail)
-                        + "\n日志：\(engineLogPath)\n"
-                        + "点「重试」再试一次，或在「设置」里改用远程主机。"
-                )
+            guard !crashedDuringBoot || bootOnDemand else {
+                phase = .idle
                 return
             }
             startEngine()
         }
     }
 
-    /// Boot again after a crash, once, on the user's word.
-    func retry() {
+    /// The user asked for the connection: the home screen's button, or a retry.
+    ///
+    /// Unlike the launch attempt this clears the crash marker, because the user
+    /// saying "again" is the one answer that supersedes it.
+    func connect() {
         bootOnDemand = true
         EnginePaths.clearBootMarker()
-        start()
+        connecting?.cancel()
+        connecting = nil
+        switch settings.mode {
+        case .remote:
+            guard let url = settings.resolvedRemoteURL else {
+                phase = .idle
+                connectionNotice = "还没有填主机地址。打开设置填入 `dsh web` 的地址，例如 192.168.1.20:8787。"
+                return
+            }
+            phase = .ready(url)
+        case .engine:
+            startEngine()
+        }
     }
+
+    /// Boot again after a crash or a failure, on the user's word.
+    func retry() {
+        connect()
+    }
+
+    // MARK: - Engine
 
     private func startEngine() {
         guard let runtime else {
-            phase = .failed("这个包里没有本机引擎。先跑 tooling/ios/prepare-engine.sh 再重新构建，或改用远程主机（见 app/ios/Engine/README.md）。")
+            phase = .idle
+            connectionNotice = "这个包里没有本机引擎。先跑 tooling/ios/prepare-engine.sh 再重新构建，或改用远程主机（见 app/ios/Engine/README.md）。"
             return
         }
         phase = .connecting
+        connectionNotice = nil
         // Booting Node waits for the loopback port, so the work is off the main
-        // actor while the window shows what is happening.
-        Task {
+        // actor whatever the window is showing.
+        connecting = Task { [weak self] in
+            defer { self?.connecting = nil }
             do {
                 let url = try await runtime.start()
-                phase = .ready(url)
+                guard !Task.isCancelled else { return }
+                self?.phase = .ready(url)
             } catch {
-                phase = .failed(error.localizedDescription)
+                guard !Task.isCancelled else { return }
+                self?.phase = .failed(error.localizedDescription)
+                self?.connectionNotice = error.localizedDescription
             }
         }
     }
+
+    // MARK: - Settings
 
     /// Adopt a settings change.
     ///
@@ -100,15 +155,25 @@ final class AppModel: ObservableObject {
         settings = next
         store.save(next)
         guard reconnects else { return }
-        phase = .idle
-        start()
+        // A settings change is the user saying "use this one", so it connects now
+        // rather than waiting for the home screen to be dismissed.
+        connect()
     }
 
     func reload() {
         reloadToken &+= 1
     }
 
+    /// A failure reported by the page itself (a load that never completed).
     func fail(_ message: String) {
         phase = .failed(message)
+        connectionNotice = message
+    }
+
+    /// Put the page away and go back to the home screen, keeping the saved settings.
+    func disconnect() {
+        connecting?.cancel()
+        connecting = nil
+        phase = .idle
     }
 }
