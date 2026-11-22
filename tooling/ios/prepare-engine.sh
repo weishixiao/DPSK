@@ -439,7 +439,7 @@ harness_package_loads() {
         const quoted = line.slice(cut + 1).match(SPEC);
         if (quoted === null) continue;
         const specifier = quoted[1];
-        // Only the package and its subpaths belong to this package's question.
+        // Only this package and its subpaths are this package question.
         if (specifier !== name && !specifier.startsWith(name + "/")) continue;
         if (seen.has(specifier)) continue;
         seen.add(specifier);
