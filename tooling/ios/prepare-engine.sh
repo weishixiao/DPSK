@@ -319,25 +319,61 @@ stage_harness_package() {
     || fail "could not copy $name out of this checkout"
 }
 
-# The imports `harness_missing_peers` accepts by directory but Node would not
-# resolve: a staged package whose built entry is missing (`lib/` absent) answers
-# the directory check and fails on the first import at run time. Reported, not
-# fatal -- which files a package publishes is its own manifest's business, and a
-# client-only package is imported by the bundle in the WebView, not by Node.
+# The imports that resolve to nothing even though the directory check above
+# accepted them: a staged package whose built entry is missing (`lib/` absent)
+# answers the directory check and fails on the first import at run time.
+#
+# Each import is resolved from the file that has it, after `realpath`. The
+# question is the one Node asks: a package inside the deploy's store finds its
+# dependencies as sibling links in the store, which the CLI's own resolution
+# root does not see -- asking from `lib/bin.js` alone reports packages that are
+# right there. The same goes for the top-level links: a link's own path is the
+# store entry's only after it is followed.
+#
+# Reported, not fatal -- which files a package publishes is its own manifest's
+# business, and a client-only package is imported by the bundle in the WebView,
+# not by Node -- but on stderr, because a name here is the harness failing at
+# boot with an empty window, the symptom this whole step exists to prevent.
 harness_unresolvable_imports() {
   local harness="$1"
   [ -f "$harness/lib/bin.js" ] || return 0
-  node -e '
-    const { createRequire } = require("module");
-    const request = createRequire(process.argv[1] + "/lib/bin.js");
-    for (const name of process.argv.slice(2)) {
-      try {
-        request.resolve(name);
-      } catch {
-        console.log(name);
+  grep -RHoE "(from|import|require)[ ]*\(?[ ]*['\"]@deepseek-ai/[A-Za-z0-9._-]+" \
+    --include='*.js' --include='*.mjs' \
+    "$harness/lib" "$harness"/node_modules/@deepseek-ai/*/lib 2>/dev/null \
+    | node -e '
+      const fs = require("fs");
+      const { createRequire } = require("module");
+      // `<file>:<matched text>`: the matched text carries no colon, so the last
+      // one in the line is the separator, whatever the path holds.
+      const LINE = /^(.*):.*[\x27"](@deepseek-ai\/[A-Za-z0-9._-]+)$/;
+      const failing = new Map();
+      const resolving = new Set();
+      const realpaths = new Map();
+      for (const line of fs.readFileSync(0, "utf8").split("\n")) {
+        const found = line.match(LINE);
+        if (found === null) continue;
+        const file = found[1];
+        const name = found[2];
+        let path = realpaths.get(file);
+        if (path === undefined) {
+          try {
+            path = fs.realpathSync(file);
+          } catch {
+            path = file;
+          }
+          realpaths.set(file, path);
+        }
+        try {
+          createRequire(path).resolve(name);
+          resolving.add(name);
+        } catch {
+          failing.set(name, (failing.get(name) || 0) + 1);
+        }
       }
-    }
-  ' "$harness" $(harness_imports "$harness")
+      for (const name of failing.keys()) {
+        console.log(name + (resolving.has(name) ? " (some import sites resolve)" : ""));
+      }
+    '
 }
 
 stage_harness_peers() {
@@ -361,7 +397,11 @@ EOF
   local unresolvable
   unresolvable=$(harness_unresolvable_imports "$harness")
   if [ -n "$unresolvable" ]; then
-    say "these are staged but resolve to nothing, so their built output is missing: $(printf '%s ' $unresolvable)"
+    # A warning, not a failure: the packages are in the tree and their `lib/` is
+    # the Mac build's to produce. But a name here is the app opening an empty
+    # window, so it goes to stderr where a build log keeps it apart from progress.
+    printf 'warning: these packages are in the harness but nothing they import resolves to them -- their built output is missing, and the app will fail on the first import: %s\n' \
+      "$(printf '%s ' $unresolvable)" >&2
   fi
 }
 
