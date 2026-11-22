@@ -151,8 +151,8 @@ actor EngineBoot {
         let thread = engineThread
         engineThread = nil
         state = .idle
-        guard let thread else { return DPSKNodeStop() == 1 }
         let stopped = DPSKNodeStop() == 1
+        guard let thread else { return stopped }
         // Poll instead of blocking: this actor must not hold the cooperative
         // pool while Node unwinds its event loop.
         let deadline = Date().addingTimeInterval(5)
