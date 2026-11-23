@@ -31,7 +31,12 @@ struct EngineRuntime {
 
     /// The engine log's tail. The failure screens show it, so a boot that never
     /// reached the port names its own reason instead of only a path.
-    static func logTail(_ lines: Int = 12) -> String { EngineBoot.logTail(lines) }
+    ///
+    /// Thirty lines rather than a dozen: Node reports a failure as a message, a
+    /// stack of frames, and a trailing `{ code, requireStack }`, so the line that
+    /// names what could not be found sits well above the last one -- the frames
+    /// alone can fill a dozen.
+    static func logTail(_ lines: Int = 30) -> String { EngineBoot.logTail(lines) }
 
     /// Boot the engine and answer the URL its Web UI serves, or throw why not.
     ///
@@ -293,7 +298,7 @@ actor EngineBoot {
 
     /// The last lines of the engine log, for the error the UI shows when boot
     /// fails: the reason is usually inside Node's own output, not in this process.
-    static func logTail(_ lines: Int = 12) -> String {
+    static func logTail(_ lines: Int = 30) -> String {
         let url = EnginePaths.logs.appendingPathComponent("engine.log")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
         let tail = text.split(separator: "\n", omittingEmptySubsequences: false).suffix(lines)
