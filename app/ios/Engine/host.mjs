@@ -23,7 +23,7 @@
 //   DPSK_LOG          the log file the app's settings screen names
 //   HOME, TMPDIR      the app container's, since the bundle is read-only
 
-import { appendFileSync, existsSync } from 'node:fs'
+import { appendFileSync, existsSync, realpathSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -44,6 +44,16 @@ const home = process.env.DSH_HOME
 // instead (no app env) keeps everything under `DSH_HOME`.
 const logPath = process.env.DPSK_LOG ?? join(home ?? engineRoot, 'Logs', 'engine.log')
 const workspace = process.env.DPSK_WORKSPACE ?? join(home ?? engineRoot, 'workspace')
+
+/** Whether two paths name the same directory, symlinks and all. */
+function sameDirectory(left, right) {
+  try {
+    return realpathSync(left) === realpathSync(right)
+  } catch {
+    // A path that does not exist cannot be the one the harness runs in.
+    return false
+  }
+}
 
 /** Append one line to the engine log, and keep going if the log is unwritable. */
 function log(line) {
@@ -83,7 +93,26 @@ for (const stream of ['stdout', 'stderr']) {
 // one failure rather than as a silent exit at import time.
 try {
   await mkdir(workspace, { recursive: true })
-  process.chdir(workspace)
+  // The app already made this the working directory: Node runs an embedded
+  // Environment with worker semantics, where `process.chdir` is a stub that
+  // throws, so the cwd has to be process state set before Node starts
+  // (EngineRuntime.enterWorkspace). Checking it here turns a wrong cwd into one
+  // sentence that names both paths, instead of a harness writing into the
+  // read-only bundle or a stack trace from inside Node.
+  // Compared through `realpath`: the container is reached as `/var/...`, while
+  // `getcwd` reports the resolved `/private/var/...`, so a plain string compare
+  // of two names for one directory would fail and take the boot with it.
+  if (sameDirectory(process.cwd(), workspace)) {
+    // Already where the harness expects to run.
+  } else {
+    try {
+      process.chdir(workspace)
+    } catch (error) {
+      throw new Error(
+        `cwd is ${process.cwd()}, not the workspace ${workspace}: ${error?.code ?? error}`,
+      )
+    }
+  }
 
   // The CLI parses `process.argv.slice(2)`; argv[0] and argv[1] only have to exist.
   process.argv = [
