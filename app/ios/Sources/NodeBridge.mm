@@ -168,9 +168,15 @@ int DPSKNodeStart(NSArray<NSString *> *arguments) {
     }
 
     if (status == 0) {
-      // Process options are already fixed; only the arguments Node reads as argv
-      // belong to this run.
-      status = RunEnvironment(storage, initialization->exec_args());
+      // `InitializeOncePerProcess` split the process's argv in two: the options
+      // it consumed are `exec_args`, and `args` is what is left -- the program
+      // name followed by the entry script and the script's own arguments. An
+      // environment built from the original argv instead hands `run_main` the
+      // first option (`--jitless`) as if it were the script: a CommonJS
+      // resolution of a name that is not a file, which exits 1 with
+      // `MODULE_NOT_FOUND` and an empty `requireStack` before any of the engine
+      // has loaded. `args` is what makes the script the script.
+      status = RunEnvironment(initialization->args(), initialization->exec_args());
     }
 
     {
