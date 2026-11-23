@@ -71,6 +71,34 @@ struct EngineRuntime {
 /// So `failed` is not terminal -- a retry starts a new run, and `stop()` ends
 /// one without ending the app. Before that split, one failed boot meant the user
 /// had to quit and reopen the app.
+
+// MARK: - Node's own diagnostics
+
+/// The engine log as the destination of the process's `stderr`.
+///
+/// A boot can fail before any JavaScript runs -- a flag Node rejects, an
+/// environment Node cannot create, a V8 fatal -- and everything Node says about
+/// that goes to `stderr`. On a device `stderr` is the console, which no screen in
+/// the app can show, so such a boot reached the user as an exit status with no
+/// reason attached. `engine.log` is the file the settings screen names, so
+/// `stderr` is pointed at it before the first `node::Start`.
+///
+/// The descriptor is opened once and never closed: `stderr` is a duplicate of it,
+/// and every later write has to keep landing in the same file.
+private enum EngineErrorLog {
+    private static let descriptor: Int32 = open(
+        EnginePaths.logs.appendingPathComponent("engine.log").path,
+        O_WRONLY | O_CREAT | O_APPEND,
+        0o644
+    )
+
+    /// Point this process's `stderr` at the engine log. Repeating it changes nothing.
+    static func attachToStderr() {
+        guard descriptor >= 0 else { return }
+        _ = dup2(descriptor, STDERR_FILENO)
+    }
+}
+
 actor EngineBoot {
     static let shared = EngineBoot()
 
@@ -221,6 +249,13 @@ actor EngineBoot {
             // libnode.dylib, a V8 failure at startup) this line is the only proof
             // the engine was reached at all, and the absence of the line below it
             // says the crash happened inside Node.
+            // Everything that fails before JavaScript runs reports on stderr: a
+            // flag Node will not accept, an environment Node cannot create, a V8
+            // fatal. On a device that stream is the console, which no screen in the
+            // app can show, so a boot that ends in under a second reached the user
+            // as an exit status with no reason. Pointing stderr at the engine log
+            // puts the reason in the file the settings screen names.
+            EngineErrorLog.attachToStderr()
             Self.appendLine("boot: calling node::Start, jit=\(EnginePaths.jitEntitled) args=\(arguments.joined(separator: " "))\n", to: logURL)
             let status = DPSKNodeStart(arguments)
             // Recorded before the log write: the port wait reads it to report a
