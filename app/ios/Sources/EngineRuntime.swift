@@ -160,6 +160,7 @@ actor EngineBoot {
         state = .booting
         do {
             try prepareDirectories()
+            try enterWorkspace()
             let exit = ExitStatus()
             launch(runtime: runtime, exit: exit)
             let url = try await waitForReady(runtime.port, exit: exit)
@@ -205,6 +206,20 @@ actor EngineBoot {
         let manager = FileManager.default
         for directory in [EnginePaths.home, EnginePaths.workspace, EnginePaths.logs] {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
+
+    /// Make the harness's workspace the process's working directory.
+    ///
+    /// The harness resolves its root from `process.cwd()`, and `host.mjs` cannot
+    /// set it: Node runs an embedded Environment with worker semantics, where
+    /// `process.chdir` is a stub that throws `ERR_WORKER_UNSUPPORTED_OPERATION`.
+    /// The working directory is process state the app can set directly, so it is
+    /// set here, before Node starts, and the script only checks what it got.
+    private func enterWorkspace() throws {
+        guard chdir(EnginePaths.workspace.path) == 0 else {
+            throw EngineRuntime.EngineError.bootFailed(
+                "进不了工作目录 \(EnginePaths.workspace.path)（errno \(errno)）")
         }
     }
 
